@@ -514,9 +514,15 @@ impl WatcherRegistry {
     ///
     /// While paused, all mutating entrypoints except this one return
     /// [`ContractError::ContractPaused`]; reads and `is_authorized` keep working.
+    ///
+    /// Idempotent: setting the flag to its current value is a no-op and emits
+    /// no event, so `admin.pause` / `admin.unpause` always mark a real transition (#446).
     pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<(), ContractError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
+        if Self::is_paused(env.clone()) == paused {
+            return Ok(());
+        }
         env.storage().instance().set(&DataKey::Paused, &paused);
         Self::extend_instance_ttl(&env);
 
@@ -1573,6 +1579,30 @@ mod tests {
         assert_eq!(client.get_watcher_count(), 1);
         client.set_paused(&admin, &false);
         client.remove_watcher(&admin, &w);
+    }
+
+    #[test]
+    fn test_set_paused_is_idempotent_and_emits_once_per_transition() {
+        let (env, admin, client) = setup();
+
+        // First pause is a real transition: exactly one event.
+        client.set_paused(&admin, &true);
+        assert_eq!(env.events().all().len(), 1);
+
+        // Repeating the same state is a no-op: no event, state unchanged.
+        client.set_paused(&admin, &true);
+        assert_eq!(env.events().all().len(), 0);
+        assert!(client.is_paused());
+
+        // Unpause is a real transition again.
+        client.set_paused(&admin, &false);
+        assert_eq!(env.events().all().len(), 1);
+        assert!(!client.is_paused());
+
+        // Repeating the unpaused state is also a no-op.
+        client.set_paused(&admin, &false);
+        assert_eq!(env.events().all().len(), 0);
+        assert!(!client.is_paused());
     }
 
     #[test]
