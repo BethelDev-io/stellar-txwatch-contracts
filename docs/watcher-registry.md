@@ -28,6 +28,8 @@ Initializes the registry with an admin address. Can only be called once.
 
 Adds an address to the authorized watcher set. Idempotent — registering an already-registered watcher is a no-op.
 
+The set is capped at `MAX_WATCHERS` (100). A registration that would exceed the cap returns `ContractError::WatcherLimitExceeded`.
+
 **Requires auth:** `admin`
 
 **Parameters**

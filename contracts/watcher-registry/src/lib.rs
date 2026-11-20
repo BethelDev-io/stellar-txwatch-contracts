@@ -12,7 +12,11 @@ const DEFAULT_TTL: u32 = 518_400;
 pub const MAX_BATCH_SIZE: u32 = 20;
 
 /// Maximum number of watchers that may be registered at once.
-pub const MAX_WATCHERS: u32 = 1_000;
+///
+/// Set to 100 to match the limit recorded in `CHANGELOG.md` and
+/// `docs/watcher-registry.md`. Registrations beyond this return
+/// `ContractError::WatcherLimitExceeded`.
+pub const MAX_WATCHERS: u32 = 100;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
