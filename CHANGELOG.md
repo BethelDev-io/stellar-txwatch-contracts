@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `AlertRegistry::get_alert_summary(owner) -> AlertSummary` returns `{ total, active, inactive }` in one call (#419).
+
 ### Changed
 - **Breaking:** `WatcherRegistry::remove_watcher` now returns `ContractError::WatcherNotFound` when the address is not registered, instead of `Ok(())` (#231).
 - `WatcherRegistry::register_watcher` enforces `MAX_WATCHERS` (100) and returns the new `ContractError::WatcherLimitExceeded` (#232). See `docs/watcher-registry.md`.

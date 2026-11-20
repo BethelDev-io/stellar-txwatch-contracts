@@ -47,6 +47,9 @@ mod pagination_boundary_tests;
 #[cfg(test)]
 mod rule_edge_tests;
 
+#[cfg(test)]
+mod alert_summary_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -144,6 +147,18 @@ pub enum ContractError {
 /// Stored under [`DataKey::Alert`] with a default TTL of [`DEFAULT_TTL`] ledgers
 /// (~7 days). Use [`AlertRegistry::bump_alert`] to extend up to [`MAX_TTL`].
 /// See `docs/ttl.md` for expiry details.
+/// Alert counts for one owner, returned by [`AlertRegistry::get_alert_summary`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AlertSummary {
+    /// Global monotonic count of alerts ever registered (see `get_alert_count`).
+    pub total: u64,
+    /// Live alerts owned by the queried owner whose `active` flag is `true`.
+    pub active: u32,
+    /// Live alerts owned by the queried owner whose `active` flag is `false`.
+    pub inactive: u32,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AlertConfig {
@@ -1512,6 +1527,37 @@ impl AlertRegistry {
             }
         }
         count
+    }
+
+    /// Return the alert counts for `owner` in a single call (#419).
+    ///
+    /// * `total` is the global monotonic counter, identical to [`get_alert_count`].
+    /// * `active` and `inactive` count the owner's live alerts (entries that have
+    ///   not been removed or expired), split by their `active` flag.
+    pub fn get_alert_summary(env: Env, owner: Address) -> AlertSummary {
+        let total = Self::get_alert_count(env.clone());
+        let ids = Self::owner_index(&env, &owner);
+        let mut active: u32 = 0;
+        let mut inactive: u32 = 0;
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            if let Some(config) = env
+                .storage()
+                .persistent()
+                .get::<_, AlertConfig>(&DataKey::Alert(id))
+            {
+                if config.active {
+                    active += 1;
+                } else {
+                    inactive += 1;
+                }
+            }
+        }
+        AlertSummary {
+            total,
+            active,
+            inactive,
+        }
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
