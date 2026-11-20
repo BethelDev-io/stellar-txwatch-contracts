@@ -54,6 +54,9 @@ mod modified_since_tests;
 mod active_count_tests;
 
 #[cfg(test)]
+mod paginated_removed_tests;
+
+#[cfg(test)]
 mod modified_since_tests;
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
