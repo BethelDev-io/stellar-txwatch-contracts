@@ -50,6 +50,9 @@ mod rule_edge_tests;
 #[cfg(test)]
 mod rule_search_tests;
 
+#[cfg(test)]
+mod validate_input_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -516,6 +519,39 @@ impl AlertRegistry {
         );
 
         Ok(id)
+    }
+
+    /// Dry-run the validation performed by [`AlertRegistry::register_alert`] (#417).
+    ///
+    /// Clients can call this before submitting a transaction to check label
+    /// length, webhook hash format, rule descriptors, tags and the per-owner
+    /// limit. It returns the first validation error encountered.
+    ///
+    /// Unlike `register_alert`, this does not require auth and never writes to
+    /// storage. In particular it does not prune the owner index the way the
+    /// real registration path does.
+    ///
+    /// `target_contract` is accepted so the signature mirrors `register_alert`;
+    /// it is not validated here.
+    pub fn validate_alert_input(
+        env: Env,
+        owner: Address,
+        target_contract: Address,
+        label: String,
+        webhook_hash: String,
+        rules: Vec<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<(), ContractError> {
+        let _ = target_contract;
+        Self::assert_not_paused(&env)?;
+        if webhook_hash.len() != 64 {
+            return Err(ContractError::InvalidWebhookHash);
+        }
+        Self::validate_label(&label)?;
+        Self::validate_rules(&env, &rules)?;
+        Self::validate_tags(&tags)?;
+        Self::assert_per_owner_limit_readonly(&env, &owner, 1)?;
+        Ok(())
     }
 
     /// Register many alerts for `caller` in one transaction.
@@ -1639,6 +1675,32 @@ impl AlertRegistry {
     /// [`ContractError::OwnerAlertLimitExceeded`].
     fn assert_per_owner_limit(env: &Env, owner: &Address) -> Result<(), ContractError> {
         Self::assert_per_owner_limit_for(env, owner, 1)
+    }
+
+    /// Read-only variant of [`assert_per_owner_limit_for`] (#417).
+    ///
+    /// Counts the owner's live alerts without pruning the owner index, so it is
+    /// safe to call from dry-run validation.
+    fn assert_per_owner_limit_readonly(
+        env: &Env,
+        owner: &Address,
+        additional: u32,
+    ) -> Result<(), ContractError> {
+        let limit = Self::get_per_owner_alert_limit(env.clone());
+        if limit > 0 {
+            let ids = Self::owner_index(env, owner);
+            let mut live: u32 = 0;
+            for i in 0..ids.len() {
+                let id = ids.get(i).unwrap();
+                if env.storage().persistent().has(&DataKey::Alert(id)) {
+                    live = live.saturating_add(1);
+                }
+            }
+            if live.saturating_add(additional) > limit {
+                return Err(ContractError::OwnerAlertLimitExceeded);
+            }
+        }
+        Ok(())
     }
 
     /// Like [`assert_per_owner_limit`], but checks that `additional` new alerts
