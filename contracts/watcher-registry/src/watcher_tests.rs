@@ -152,3 +152,48 @@ fn is_watcher_authorized_at_false_after_removal() {
     client.remove_watcher(&admin, &watcher);
     assert!(!client.is_watcher_authorized_at(&watcher, &0));
 }
+
+// ── #426: get_watcher_registered_at(watcher) ────────────────────────────────
+
+#[test]
+fn get_watcher_registered_at_returns_the_registration_timestamp() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    env.ledger().set_timestamp(1_234);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    assert_eq!(client.get_watcher_registered_at(&watcher), Some(1_234));
+    // Matches the value stored in WatcherInfo.
+    assert_eq!(
+        client.get_watcher_info(&watcher).unwrap().registered_at,
+        1_234
+    );
+}
+
+#[test]
+fn get_watcher_registered_at_none_for_unknown_watcher() {
+    let (env, client, _admin) = setup();
+    let stranger = Address::generate(&env);
+    assert_eq!(client.get_watcher_registered_at(&stranger), None);
+}
+
+#[test]
+fn get_watcher_registered_at_none_after_removal() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    client.remove_watcher(&admin, &watcher);
+    assert_eq!(client.get_watcher_registered_at(&watcher), None);
+}
+
+#[test]
+fn get_watcher_registered_at_unchanged_by_later_renewal() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    env.ledger().set_timestamp(50);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    env.ledger().set_timestamp(900);
+    client.renew_watcher(&admin, &watcher, &Some(2_000));
+    assert_eq!(client.get_watcher_registered_at(&watcher), Some(50));
+}

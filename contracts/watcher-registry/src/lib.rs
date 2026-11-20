@@ -647,6 +647,13 @@ impl WatcherRegistry {
         env.storage().persistent().get(&DataKey::WatcherInfo(watcher))
     }
 
+    /// Return the ledger timestamp at which `watcher` was registered, or `None`
+    /// if it is not registered. Read-only, no auth (#426).
+    #[must_use]
+    pub fn get_watcher_registered_at(env: Env, watcher: Address) -> Option<u64> {
+        Self::get_watcher_info(env, watcher).map(|info| info.registered_at)
+    }
+
     /// Get all current admin addresses.
     ///
     /// Returns `Err(NotInitialized)` if the contract has not been initialized.
