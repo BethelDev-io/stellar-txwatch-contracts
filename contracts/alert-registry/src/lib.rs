@@ -86,8 +86,16 @@ pub enum DataKey {
     OwnerIndex(Address),
     /// Stores the list of alert IDs watching a given contract address.
     ContractIndex(Address),
-    /// Monotonic counter used to generate unique alert IDs.
+    /// Monotonic counter used to generate unique alert IDs (instance storage).
     NextId,
+    /// Admin set (instance storage). Legacy single-`Address` values are migrated on read.
+    Admin,
+    /// Per-owner active alert limit (instance storage).
+    Limit,
+    /// Circuit-breaker paused flag (instance storage).
+    Paused,
+    /// Address of the configured `WatcherRegistry` (instance storage).
+    WatcherRegistry,
 }
 
 #[contracterror]
@@ -235,7 +243,7 @@ impl AlertRegistry {
 
     /// Initialize the optional admin role for the registry. Can only be called once.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
-        if env.storage().instance().has(&symbol_short!("ADMIN")) {
+        if env.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
         Self::set_admins(&env, &vec![&env, admin.clone()]);
@@ -375,7 +383,7 @@ impl AlertRegistry {
         if limit != 0 && limit < 1 {
             return Err(ContractError::LimitTooLow);
         }
-        env.storage().instance().set(&symbol_short!("LIMIT"), &limit);
+        env.storage().instance().set(&DataKey::Limit, &limit);
         // Record every limit change on-chain, so the audit trail shows it (#248).
         env.events().publish((symbol_short!("admin"), symbol_short!("limit")), (admin, limit));
         Ok(())
@@ -388,7 +396,7 @@ impl AlertRegistry {
     pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<(), ContractError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
-        env.storage().instance().set(&symbol_short!("PAUSED"), &paused);
+        env.storage().instance().set(&DataKey::Paused, &paused);
         let topic = if paused {
             symbol_short!("pause")
         } else {
@@ -402,7 +410,7 @@ impl AlertRegistry {
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&symbol_short!("PAUSED"))
+            .get(&DataKey::Paused)
             .unwrap_or(false)
     }
 
@@ -410,7 +418,7 @@ impl AlertRegistry {
     pub fn get_per_owner_alert_limit(env: Env) -> u32 {
         env.storage()
             .instance()
-            .get(&symbol_short!("LIMIT"))
+            .get(&DataKey::Limit)
             .unwrap_or(0u32)
     }
 
@@ -432,7 +440,7 @@ impl AlertRegistry {
         Self::assert_admin(&env, &admin)?;
         env.storage()
             .instance()
-            .set(&symbol_short!("WATCHREG"), &watcher_registry);
+            .set(&DataKey::WatcherRegistry, &watcher_registry);
         Ok(())
     }
 
@@ -441,7 +449,7 @@ impl AlertRegistry {
     pub fn get_watcher_registry(env: Env) -> Option<Address> {
         env.storage()
             .instance()
-            .get(&symbol_short!("WATCHREG"))
+            .get(&DataKey::WatcherRegistry)
     }
 
     // ── Alert mutations ───────────────────────────────────────────────────
@@ -1354,7 +1362,7 @@ impl AlertRegistry {
         let total: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
 
         let mut out: Vec<AlertConfig> = vec![&env];
@@ -1494,7 +1502,7 @@ impl AlertRegistry {
     pub fn get_alert_count(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64)
     }
 
@@ -1532,7 +1540,7 @@ impl AlertRegistry {
         let maybe_registry: Option<Address> = env
             .storage()
             .instance()
-            .get(&symbol_short!("WATCHREG"));
+            .get(&DataKey::WatcherRegistry);
 
         if let Some(registry_addr) = maybe_registry {
             let client = ExtWatcherClient::new(env, &registry_addr);
@@ -1564,7 +1572,7 @@ impl AlertRegistry {
 
     /// Load the admin set, transparently migrating the legacy single-`Address` format.
     fn load_admins(env: &Env) -> Option<Vec<Address>> {
-        let raw: Val = env.storage().instance().get(&symbol_short!("ADMIN"))?;
+        let raw: Val = env.storage().instance().get(&DataKey::Admin)?;
         if let Ok(v) = Vec::<Address>::try_from_val(env, &raw) {
             return Some(v);
         }
@@ -1572,7 +1580,7 @@ impl AlertRegistry {
     }
 
     fn set_admins(env: &Env, admins: &Vec<Address>) {
-        env.storage().instance().set(&symbol_short!("ADMIN"), admins);
+        env.storage().instance().set(&DataKey::Admin, admins);
     }
 
     fn assert_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
@@ -1746,12 +1754,12 @@ impl AlertRegistry {
         let id: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
         let next = id.checked_add(1).ok_or(ContractError::CounterOverflow)?;
         env.storage()
             .instance()
-            .set(&symbol_short!("NEXT_ID"), &next);
+            .set(&DataKey::NextId, &next);
         // Extend instance TTL so the counter stays alive even when only
         // bump_alert calls come in and no new registrations are happening (#212).
         env.storage()
@@ -3870,7 +3878,7 @@ mod tests {
         let owner = Address::generate(&env);
         let target = Address::generate(&env);
 
-        env.storage().instance().set(&symbol_short!("NEXT_ID"), &u64::MAX);
+        env.storage().instance().set(&DataKey::NextId, &u64::MAX);
 
         let res = client.try_register_alert(
             &owner,
@@ -4005,7 +4013,7 @@ mod tests {
         let count_before: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
         assert_eq!(count_before, 1u64);
 
@@ -4018,7 +4026,7 @@ mod tests {
         let count_after: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
         assert_eq!(count_after, count_before, "NEXT_ID must not change after bump_alert calls");
 
@@ -4135,7 +4143,7 @@ mod tests {
         let a = Address::generate(&env);
         let b = Address::generate(&env);
         env.as_contract(&c.address, || {
-            env.storage().instance().set(&symbol_short!("ADMIN"), &a);
+            env.storage().instance().set(&DataKey::Admin, &a);
         });
         assert_eq!(c.get_admin(), a);
         c.add_admin(&a, &b);
