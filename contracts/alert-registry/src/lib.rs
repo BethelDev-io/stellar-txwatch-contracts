@@ -235,6 +235,7 @@ impl AlertRegistry {
 
     /// Initialize the optional admin role for the registry. Can only be called once.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         if env.storage().instance().has(&symbol_short!("ADMIN")) {
             return Err(ContractError::AlreadyInitialized);
         }
