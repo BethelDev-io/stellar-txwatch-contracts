@@ -50,6 +50,9 @@ mod rule_edge_tests;
 #[cfg(test)]
 mod alert_summary_tests;
 
+#[cfg(test)]
+mod webhook_note_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -788,15 +791,27 @@ impl AlertRegistry {
     /// Returns [`ContractError::AlertNotFound`] if `config_id` does not exist.
     /// Returns [`ContractError::Unauthorized`] if `caller` is not the alert owner.
     ///
+    /// `note` is an optional free-form reason for the rotation (max 128 bytes,
+    /// same rule as the alert label). It is **not** stored on-chain; it is only
+    /// carried in the emitted event so operators have an audit trail.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::LabelTooLong`] if `note` exceeds 128 bytes.
+    ///
     /// # Events
-    /// Emits `(Symbol("alert"), Symbol("wh_prop"))` with data `(id: u64, caller: Address)`.
+    /// Emits `(Symbol("alert"), Symbol("wh_prop"))` with data
+    /// `(id: u64, caller: Address, note: Option<String>)`.
     pub fn propose_webhook(
         env: Env,
         caller: Address,
         config_id: u64,
         new_webhook_hash: String,
+        note: Option<String>,
     ) -> Result<(), ContractError> {
         caller.require_auth();
+        if let Some(n) = &note {
+            Self::validate_label(n)?;
+        }
 
         let mut config: AlertConfig = env
             .storage()
@@ -818,7 +833,7 @@ impl AlertRegistry {
 
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("wh_prop")),
-            (config_id, caller),
+            (config_id, caller, note),
         );
 
         Ok(())
