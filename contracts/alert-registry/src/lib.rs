@@ -1,7 +1,7 @@
 ﻿#![no_std]
 #![warn(clippy::pedantic)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, vec, Address, Env, String, TryFromVal, Val, Vec,
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, vec, Address, Env, String, Symbol, TryFromVal, Val, Vec,
 };
 
 // ── Storage keys ────────────────────────────────────────────────────────────
@@ -421,6 +421,10 @@ impl AlertRegistry {
     /// paginated variants will cross-call `WatcherRegistry::is_watcher_authorized`
     /// before returning data. Pass the zero address to disable gating.
     ///
+    /// # Events
+    /// Emits `(Symbol("admin"), Symbol("watcher_reg"))` with data
+    /// `(admin: Address, watcher_registry: Address)` on every successful call.
+    ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `admin`.
     pub fn set_watcher_registry(
@@ -433,6 +437,11 @@ impl AlertRegistry {
         env.storage()
             .instance()
             .set(&symbol_short!("WATCHREG"), &watcher_registry);
+        // Audit trail (#423): every successful change is observable on-chain.
+        env.events().publish(
+            (symbol_short!("admin"), Symbol::new(&env, "watcher_reg")),
+            (admin, watcher_registry),
+        );
         Ok(())
     }
 
