@@ -567,13 +567,19 @@ impl WatcherRegistry {
         Ok(())
     }
 
-    /// Get all authorized watcher addresses.
+    /// Deprecated alias for [`WatcherRegistry::get_all_watchers`].
+    ///
+    /// Returns exactly the same result. It is kept for one release so existing
+    /// callers can migrate; new code should call `get_all_watchers`.
     #[must_use]
     pub fn get_watchers(env: Env) -> Vec<Address> {
         Self::load_watchers(&env)
     }
 
     /// Get all registered watcher addresses. Read-only, no auth.
+    ///
+    /// This is the canonical listing function. [`WatcherRegistry::get_watchers`]
+    /// is a deprecated alias that returns the same result.
     #[must_use]
     pub fn get_all_watchers(env: Env) -> Vec<Address> {
         Self::load_watchers(&env)
@@ -982,6 +988,18 @@ mod tests {
     fn test_get_watchers_empty() {
         let (_env, _admin, client) = setup();
         assert_eq!(client.get_watchers().len(), 0);
+    }
+
+    // 7b. Deprecated alias — get_watchers returns the same list as get_all_watchers
+    #[test]
+    fn test_get_watchers_matches_get_all_watchers() {
+        let (env, admin, client) = setup();
+        let w1 = Address::generate(&env);
+        let w2 = Address::generate(&env);
+        client.register_watcher(&admin, &w1, &None);
+        client.register_watcher(&admin, &w2, &None);
+
+        assert_eq!(client.get_watchers(), client.get_all_watchers());
     }
 
     // 8. Edge case — register same watcher twice is idempotent

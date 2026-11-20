@@ -80,9 +80,9 @@ Renamed from `is_authorized` for clarity in cross-contract call contexts — the
 
 ---
 
-### `get_watchers`
+### `get_watchers` (deprecated)
 
-Returns all currently authorized watcher addresses.
+Deprecated alias for `get_all_watchers`. It returns the same result and is kept for one release so existing callers can migrate. New code should call `get_all_watchers`.
 
 **Parameters:** none
 
