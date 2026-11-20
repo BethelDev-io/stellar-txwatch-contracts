@@ -47,6 +47,9 @@ mod pagination_boundary_tests;
 #[cfg(test)]
 mod rule_edge_tests;
 
+#[cfg(test)]
+mod rule_search_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -1164,6 +1167,35 @@ impl AlertRegistry {
         let mut out: Vec<AlertConfig> = vec![&env];
         for i in start..end {
             out.push_back(active.get(i).unwrap());
+        }
+        out
+    }
+
+    /// Return the active alerts whose rule list contains `rule` (#416).
+    ///
+    /// v1 uses a linear scan over every allocated alert ID. Results are capped
+    /// at [`MAX_BATCH_SIZE`]; once the cap is reached the scan stops early.
+    /// Inactive and removed alerts are skipped. Read-only, no auth.
+    #[must_use]
+    pub fn get_alerts_by_rule(env: Env, rule: String) -> Vec<AlertConfig> {
+        let next: u64 = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("NEXT_ID"))
+            .unwrap_or(0u64);
+        let mut out: Vec<AlertConfig> = Vec::new(&env);
+        let mut id: u64 = 0;
+        while id < next && out.len() < MAX_BATCH_SIZE {
+            if let Some(cfg) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
+            {
+                if cfg.active && cfg.rules.contains(&rule) {
+                    out.push_back(cfg);
+                }
+            }
+            id += 1;
         }
         out
     }
