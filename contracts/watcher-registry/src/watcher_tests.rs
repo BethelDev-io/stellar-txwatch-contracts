@@ -100,3 +100,55 @@ fn is_authorized_is_true_only_for_registered_watchers() {
     assert!(client.is_authorized(&watcher));
     assert!(!client.is_authorized(&other));
 }
+
+// ── #424: is_watcher_authorized_at(watcher, at) ─────────────────────────────
+
+#[test]
+fn is_watcher_authorized_at_true_when_no_expiry_is_set() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    assert!(client.is_watcher_authorized_at(&watcher, &0));
+    assert!(client.is_watcher_authorized_at(&watcher, &u64::MAX));
+}
+
+#[test]
+fn is_watcher_authorized_at_respects_the_expiry_boundary() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &Some(200));
+    // Inclusive boundary: at == expiry is still authorized.
+    assert!(client.is_watcher_authorized_at(&watcher, &200));
+    assert!(client.is_watcher_authorized_at(&watcher, &199));
+    assert!(!client.is_watcher_authorized_at(&watcher, &201));
+}
+
+#[test]
+fn is_watcher_authorized_at_false_for_unregistered_watcher() {
+    let (env, client, _admin) = setup();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_watcher_authorized_at(&stranger, &0));
+}
+
+#[test]
+fn is_watcher_authorized_at_is_independent_of_current_ledger_time() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    env.ledger().set_timestamp(100);
+    client.register_watcher(&admin, &watcher, &None, &Some(200));
+    // Current time is past expiry, but the historical query still answers for T=150.
+    env.ledger().set_timestamp(10_000);
+    assert!(!client.is_watcher_authorized(&watcher));
+    assert!(client.is_watcher_authorized_at(&watcher, &150));
+    assert!(!client.is_watcher_authorized_at(&watcher, &500));
+}
+
+#[test]
+fn is_watcher_authorized_at_false_after_removal() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    client.remove_watcher(&admin, &watcher);
+    assert!(!client.is_watcher_authorized_at(&watcher, &0));
+}

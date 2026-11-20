@@ -545,13 +545,27 @@ impl WatcherRegistry {
     /// the name now makes explicit *what* the address is being authorized as.
     #[must_use]
     pub fn is_watcher_authorized(env: Env, watcher: Address) -> bool {
+        let now = env.ledger().timestamp();
+        Self::is_watcher_authorized_at(env, watcher, now)
+    }
+
+    /// Check whether `watcher` was (or is) authorized at the ledger timestamp `at`.
+    ///
+    /// Intended for time-locked checks such as dispute resolution, where the
+    /// question is "was this watcher authorized at time T?" rather than "is it
+    /// authorized now?". Returns `true` when the watcher is registered and either
+    /// has no expiry or `at <= expiry`; `false` when the watcher is not registered.
+    ///
+    /// This is a read-only query: no auth is required and it works while paused.
+    #[must_use]
+    pub fn is_watcher_authorized_at(env: Env, watcher: Address, at: u64) -> bool {
         Self::extend_instance_ttl(&env);
         let watchers = Self::load_watchers(&env);
         if !watchers.contains(&watcher) {
             return false;
         }
         match Self::load_expiries(&env).get(watcher) {
-            Some(exp) => env.ledger().timestamp() <= exp,
+            Some(exp) => at <= exp,
             None => true,
         }
     }
