@@ -47,6 +47,9 @@ mod pagination_boundary_tests;
 #[cfg(test)]
 mod rule_edge_tests;
 
+#[cfg(test)]
+mod propose_webhook_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -772,6 +775,8 @@ impl AlertRegistry {
     /// # Errors
     /// Returns [`ContractError::AlertNotFound`] if `config_id` does not exist.
     /// Returns [`ContractError::Unauthorized`] if `caller` is not the alert owner.
+    /// Returns [`ContractError::InvalidWebhookHash`] if `new_webhook_hash` is not
+    /// exactly 64 characters.
     ///
     /// # Events
     /// Emits `(Symbol("alert"), Symbol("wh_prop"))` with data `(id: u64, caller: Address)`.
@@ -782,6 +787,12 @@ impl AlertRegistry {
         new_webhook_hash: String,
     ) -> Result<(), ContractError> {
         caller.require_auth();
+
+        // Validate before staging: an invalid pending hash would otherwise be
+        // promoted by `confirm_webhook` and break off-chain watcher delivery (#444).
+        if new_webhook_hash.len() != 64 {
+            return Err(ContractError::InvalidWebhookHash);
+        }
 
         let mut config: AlertConfig = env
             .storage()
@@ -4216,4 +4227,3 @@ mod tests {
         assert_eq!(c.get_alerts_updated_since(&t, &201, &0, &10).len(), 0);
     }
 }
-
