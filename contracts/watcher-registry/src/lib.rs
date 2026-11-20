@@ -33,6 +33,8 @@ pub enum ContractError {
     BatchTooLarge = 7,
     /// Returned when registration would exceed [`MAX_WATCHERS`].
     WatcherLimitExceeded = 8,
+    /// Returned by `remove_admin` when `target_admin` is not in the admin set.
+    NotAdmin = 9,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -154,6 +156,11 @@ impl WatcherRegistry {
         Self::assert_not_paused(&env)?;
 
         let admins = Self::load_admins(&env);
+        // Refuse no-op removals so a caller mistake (wrong address) surfaces as
+        // an error instead of a silent success.
+        if !admins.contains(&target_admin) {
+            return Err(ContractError::NotAdmin);
+        }
         if admins.len() <= 1 {
             return Err(ContractError::LastAdmin);
         }
