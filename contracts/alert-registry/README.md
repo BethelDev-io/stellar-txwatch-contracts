@@ -45,6 +45,7 @@ and is suitable for use as a reference implementation.
 | `get_contract_alerts_paginated` | Paginated list of alerts for a target contract | None |
 | `get_alerts_by_owner` | List all alerts owned by an address | None |
 | `get_alerts_by_owner_paginated` | Paginated list of alerts for an owner | None |
+| `get_alert_ids_by_owner_paginated` | One page of live alert IDs for an owner; `limit` capped at `MAX_BATCH_SIZE` | None |
 | `get_alert_count_for_contract` | Number of live alerts watching a target contract (`u32`, TypeScript `number`) | None |
 | `set_owner_limit` | Set the max active alerts per owner | Admin |
 | `transfer_admin` | Transfer the admin role to a new address | Admin |

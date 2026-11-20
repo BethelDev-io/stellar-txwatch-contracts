@@ -36,6 +36,9 @@ mod contract_alert_count_tests;
 mod set_alert_active_tests;
 
 #[cfg(test)]
+mod owner_ids_paginated_tests;
+
+#[cfg(test)]
 mod owner_isolation_tests;
 
 #[cfg(all(test, feature = "testutils"))]
@@ -1216,6 +1219,33 @@ impl AlertRegistry {
     pub fn get_alert_ids_by_owner(env: Env, owner: Address) -> Vec<u64> {
         let ids = Self::owner_index(&env, &owner);
         Self::live_ids(&env, &ids)
+    }
+
+    /// Return one page of the live alert IDs owned by `owner`.
+    ///
+    /// `offset` and `limit` address the list of *live* IDs, so an ID whose
+    /// storage entry has gone never occupies a slot in a page. `limit` is
+    /// clamped to [`MAX_BATCH_SIZE`]. An `offset` at or past the end returns an
+    /// empty vec.
+    ///
+    /// The existence check runs over the owner's full index before slicing, so
+    /// this bounds the size of each response; it does not reduce the storage
+    /// reads per call.
+    #[must_use]
+    pub fn get_alert_ids_by_owner_paginated(
+        env: Env,
+        owner: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        let effective_limit = limit.min(MAX_BATCH_SIZE);
+        let live = Self::live_ids(&env, &Self::owner_index(&env, &owner));
+        let end = offset.saturating_add(effective_limit).min(live.len());
+        let mut page: Vec<u64> = Vec::new(&env);
+        for i in offset..end {
+            page.push_back(live.get(i).unwrap());
+        }
+        page
     }
 
     /// Retrieve only the active alert configs that watch a given contract address.
