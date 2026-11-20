@@ -56,6 +56,21 @@ jobs:
       - name: Integration tests
         run: cargo test -p integration-tests
 
+      # Issue #477 — Enforce per-crate line-coverage floors from README.md
+      # (alert-registry >= 90%, watcher-registry >= 90%, integration-tests >= 80%).
+      # Each crate is measured separately so one crate cannot mask another.
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Coverage floor (alert-registry >= 90%)
+        run: cargo llvm-cov -p alert-registry --fail-under-lines 90 --summary-only
+
+      - name: Coverage floor (watcher-registry >= 90%)
+        run: cargo llvm-cov -p watcher-registry --fail-under-lines 90 --summary-only
+
+      - name: Coverage floor (integration-tests >= 80%)
+        run: cargo llvm-cov -p integration-tests --fail-under-lines 80 --summary-only
+
       # Issue #100 / #289 — Clippy lint check (deny warnings)
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
