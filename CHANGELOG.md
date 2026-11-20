@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `AlertRegistry::get_alert_summary(owner) -> AlertSummary` returns `{ total, active, inactive }` in one call (#419).
+- `WatcherRegistry::batch_remove_watchers(admin, watchers) -> Result<u32, ContractError>` removes up to `MAX_BATCH_SIZE` (20) watchers in one call, skipping unregistered addresses and emitting `watcher.remove` per removed address. Returns `BatchTooLarge` for oversized batches (#421).
 - Optional `note: Option<String>` (max 128 bytes) on `propose_webhook`, included in the `alert.wh_prop` event data and not stored on-chain (#420).
 
 ### Changed

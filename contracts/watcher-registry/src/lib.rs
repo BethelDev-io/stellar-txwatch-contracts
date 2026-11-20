@@ -11,6 +11,9 @@ const DEFAULT_TTL: u32 = 518_400;
 /// Maximum number of watchers that may be registered at once.
 pub const MAX_WATCHERS: u32 = 100;
 
+/// Maximum number of addresses accepted by `batch_remove_watchers` in one call (#421).
+pub const MAX_BATCH_SIZE: u32 = 20;
+
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -26,6 +29,8 @@ pub enum ContractError {
     WatcherNotFound = 5,
     /// Returned when registering a watcher would exceed [`MAX_WATCHERS`].
     WatcherLimitExceeded = 6,
+    /// Returned when a batch operation exceeds [`MAX_BATCH_SIZE`] entries.
+    BatchTooLarge = 7,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -282,6 +287,70 @@ impl WatcherRegistry {
         );
 
         Ok(())
+    }
+
+    /// Remove several watchers in one call, skipping any that are not registered (#421).
+    ///
+    /// Returns the number of watchers actually removed. Addresses that are not
+    /// in the registry (including duplicates within `watchers`) are skipped
+    /// without error. A batch larger than [`MAX_BATCH_SIZE`] is rejected with
+    /// [`ContractError::BatchTooLarge`] and nothing is changed.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `admin`, who must be an
+    /// existing admin.
+    ///
+    /// # Events
+    /// Emits `("watcher", "remove")` with data `(watcher: Address)` for each
+    /// address that was actually removed.
+    pub fn batch_remove_watchers(
+        env: Env,
+        admin: Address,
+        watchers: Vec<Address>,
+    ) -> Result<u32, ContractError> {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin)?;
+
+        if watchers.len() > MAX_BATCH_SIZE {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let mut current = Self::load_watchers(&env);
+        let mut removed: Vec<Address> = vec![&env];
+        for target in watchers.iter() {
+            let mut found_at: Option<u32> = None;
+            for j in 0..current.len() {
+                if current.get(j).unwrap() == target {
+                    found_at = Some(j);
+                    break;
+                }
+            }
+            if let Some(idx) = found_at {
+                current.remove(idx);
+                removed.push_back(target);
+            }
+        }
+
+        let count = removed.len();
+        if count == 0 {
+            return Ok(0);
+        }
+
+        env.storage().instance().set(&DataKey::Watchers, &current);
+        Self::extend_instance_ttl(&env);
+
+        for _ in 0..count {
+            Self::decrement_watcher_count(&env);
+        }
+
+        for watcher in removed.iter() {
+            env.events().publish(
+                (symbol_short!("watcher"), symbol_short!("remove")),
+                watcher,
+            );
+        }
+
+        Ok(count)
     }
 
     /// Atomically replace `old_watcher` with `new_watcher` in a single transaction.
@@ -543,6 +612,9 @@ impl WatcherRegistry {
 
 #[cfg(test)]
 mod watcher_tests;
+
+#[cfg(test)]
+mod batch_remove_tests;
 
 #[cfg(test)]
 mod tests {
