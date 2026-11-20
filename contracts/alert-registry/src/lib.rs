@@ -33,6 +33,9 @@ mod count_consistency_tests;
 mod contract_alert_count_tests;
 
 #[cfg(test)]
+mod set_alert_active_tests;
+
+#[cfg(test)]
 mod owner_isolation_tests;
 
 #[cfg(all(test, feature = "testutils"))]
@@ -680,6 +683,71 @@ impl AlertRegistry {
             .persistent()
             .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
         // Keep the cheap AlertActive flag in sync with the full config.
+        env.storage()
+            .persistent()
+            .set(&DataKey::AlertActive(config_id), &active);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::AlertActive(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::ContractIndex(config.target_contract.clone()), DEFAULT_TTL, DEFAULT_TTL);
+
+        env.events().publish(
+            (symbol_short!("alert"), symbol_short!("update")),
+            (config_id, caller, active),
+        );
+
+        Ok(())
+    }
+
+    /// Set only the `active` flag of an existing alert.
+    ///
+    /// Unlike [`AlertRegistry::update_alert`], the caller does not need to pass
+    /// the current rules back, so toggling an alert costs no extra read. The
+    /// rules, label, webhook hash and tags are left unchanged.
+    ///
+    /// Keeps the `AlertActive` flag in sync and emits
+    /// `(Symbol("alert"), Symbol("update"))` with data `(config_id, caller, active)`,
+    /// the same event `update_alert` emits.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`, who must be the
+    /// original owner of the alert.
+    ///
+    /// # Errors
+    /// [`ContractError::ContractPaused`] while paused,
+    /// [`ContractError::AlertNotFound`] if the alert does not exist, and
+    /// [`ContractError::Unauthorized`] if `caller` is not the owner.
+    pub fn set_alert_active(
+        env: Env,
+        caller: Address,
+        config_id: u64,
+        active: bool,
+    ) -> Result<(), ContractError> {
+        Self::assert_not_paused(&env)?;
+        caller.require_auth();
+
+        let mut config: AlertConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Alert(config_id))
+            .ok_or(ContractError::AlertNotFound)?;
+
+        Self::assert_owner(&config, &caller)?;
+
+        config.active = active;
+        config.updated_at = env.ledger().timestamp();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Alert(config_id), &config);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
         env.storage()
             .persistent()
             .set(&DataKey::AlertActive(config_id), &active);

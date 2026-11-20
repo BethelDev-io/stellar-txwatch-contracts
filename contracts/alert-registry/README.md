@@ -39,6 +39,7 @@ and is suitable for use as a reference implementation.
 | --- | --- | --- |
 | `register_alert` | Register a new alert for a target contract with rules and webhook hash | Owner |
 | `remove_alert` | Remove an alert by ID | Owner or admin |
+| `set_alert_active` | Toggle only the `active` flag of an alert; rules, label, webhook and tags are unchanged | Owner |
 | `get_alert` | Fetch a single alert config by ID | None |
 | `get_contract_alerts` | List all alerts watching a target contract | None |
 | `get_contract_alerts_paginated` | Paginated list of alerts for a target contract | None |
