@@ -53,6 +53,9 @@ mod rule_search_tests;
 #[cfg(test)]
 mod validate_input_tests;
 
+#[cfg(test)]
+mod activate_all_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -1338,6 +1341,48 @@ impl AlertRegistry {
                     env.storage()
                         .persistent()
                         .set(&DataKey::AlertActive(id), &false);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&DataKey::AlertActive(id), DEFAULT_TTL, DEFAULT_TTL);
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// Re-activate every inactive alert owned by `caller` in one call (#418).
+    ///
+    /// Mirror of [`AlertRegistry::deactivate_all_alerts`]. Already-active alerts
+    /// are skipped. Each alert that changes has its `AlertActive` flag synced.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`.
+    ///
+    /// # Returns
+    /// The number of alerts that were activated.
+    pub fn activate_all_alerts(env: Env, caller: Address) -> u32 {
+        Self::assert_not_paused(&env).unwrap_or_else(|e| panic_with_error!(&env, e));
+        caller.require_auth();
+        let ids = Self::owner_index(&env, &caller);
+        let mut count: u32 = 0;
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            if let Some(mut cfg) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
+            {
+                if !cfg.active {
+                    cfg.active = true;
+                    cfg.updated_at = env.ledger().timestamp();
+                    env.storage().persistent().set(&DataKey::Alert(id), &cfg);
+                    env.storage()
+                        .persistent()
+                        .extend_ttl(&DataKey::Alert(id), DEFAULT_TTL, DEFAULT_TTL);
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::AlertActive(id), &true);
                     env.storage()
                         .persistent()
                         .extend_ttl(&DataKey::AlertActive(id), DEFAULT_TTL, DEFAULT_TTL);
