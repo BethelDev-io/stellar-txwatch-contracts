@@ -1,8 +1,12 @@
 #![no_std]
 #![warn(clippy::pedantic)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, symbol_short, vec, Address, Env, Map, Symbol, Vec,
+    contract, contractimpl, symbol_short, vec, Address, Env, Map, String, Vec,
 };
+
+mod types;
+
+pub use types::{ContractError, DataKey, WatcherInfo};
 
 /// Number of ledgers to extend instance storage TTL by on each access.
 /// At ~5s per ledger this is roughly 30 days.
@@ -14,41 +18,11 @@ pub const MAX_BATCH_SIZE: u32 = 20;
 /// Maximum number of watchers that may be registered at once.
 pub const MAX_WATCHERS: u32 = 1_000;
 
-// ── Errors ────────────────────────────────────────────────────────────────────
+/// Maximum byte length of a watcher label.
+pub const MAX_LABEL_BYTES: u32 = 64;
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum ContractError {
-    AlreadyInitialized = 1,
-    Unauthorized = 2,
-    NotInitialized = 3,
-    /// Returned when trying to remove the last admin, which would lock the contract.
-    LastAdmin = 4,
-    /// Returned when the specified watcher is not currently registered.
-    WatcherNotFound = 5,
-    /// Returned by mutating entrypoints while the registry is paused.
-    ContractPaused = 6,
-    /// Returned when a batch exceeds [`MAX_BATCH_SIZE`].
-    BatchTooLarge = 7,
-    /// Returned when registration would exceed [`MAX_WATCHERS`].
-    WatcherLimitExceeded = 8,
-}
-
-// ── Storage keys ─────────────────────────────────────────────────────────────
-
-/// Storage key variants used to address instance entries.
-#[contracttype]
-pub enum DataKey {
-    /// Stores the `Vec<Address>` of current admins.
-    Admins,
-    /// Stores the `Vec<Address>` of authorized watcher nodes.
-    Watchers,
-    /// Stores the paused flag (circuit breaker).
-    Paused,
-    /// Stores a `Map<Address, u64>` of watcher expiry timestamps.
-    Expiries,
-}
+/// Maximum number of entries returned by a single paginated read.
+pub const MAX_PAGE_LIMIT: u32 = 100;
 
 // ── Contract ─────────────────────────────────────────────────────────────────
 
@@ -175,7 +149,7 @@ impl WatcherRegistry {
 
         if caller == target_admin {
             env.events().publish(
-                (symbol_short!("admin"), Symbol::new(&env, "self_remove")),
+                (symbol_short!("admin"), soroban_sdk::Symbol::new(&env, "self_remove")),
                 caller,
             );
         }
@@ -227,13 +201,13 @@ impl WatcherRegistry {
     ///
     /// Idempotent — registering an already-authorized watcher is a no-op.
     ///
-    /// `expires_at` is an optional ledger timestamp after which the watcher is
-    /// no longer authorized (see [`WatcherRegistry::renew_watcher`]).
+    /// `label` is an optional human-readable tag (at most [`MAX_LABEL_BYTES`]
+    /// bytes). Expiry can be set afterwards with [`WatcherRegistry::renew_watcher`].
     pub fn register_watcher(
         env: Env,
         admin: Address,
         watcher: Address,
-        expires_at: Option<u64>,
+        label: Option<String>,
     ) -> Result<(), ContractError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
@@ -247,10 +221,17 @@ impl WatcherRegistry {
         if env.storage().persistent().has(&DataKey::WatcherInfo(watcher.clone())) {
             return Ok(()); // already registered, idempotent
         }
+        let mut watchers = Self::load_watchers(&env);
         if watchers.len() >= MAX_WATCHERS {
             return Err(ContractError::WatcherLimitExceeded);
         }
-        Self::set_expiry(&env, &watcher, expires_at);
+        let info = WatcherInfo {
+            address: watcher.clone(),
+            label,
+            registered_at: env.ledger().timestamp(),
+            registered_by: admin.clone(),
+        };
+        Self::save_info(&env, &info);
         watchers.push_back(watcher.clone());
         env.storage().instance().set(&DataKey::Watchers, &watchers);
         Self::extend_instance_ttl(&env);
@@ -311,6 +292,7 @@ impl WatcherRegistry {
         // watcher's trust has been revoked.
         if removed {
             Self::set_expiry(&env, &watcher, None);
+            env.storage().persistent().remove(&DataKey::WatcherInfo(watcher.clone()));
             Self::decrement_watcher_count(&env);
             env.events().publish(
                 (symbol_short!("watcher"), symbol_short!("remove")),
@@ -1233,14 +1215,17 @@ mod tests {
         client.add_admin(&admin, &second_admin);
 
         assert_eq!(client.try_remove_admin(&admin, &admin).unwrap(), Ok(()));
-        assert!(!client.is_admin(&admin));
-        assert!(client.is_admin(&second_admin));
 
+        // Events are scoped to the last invocation, so check them before
+        // issuing any further contract calls.
         let (_, topics, _) = env.events().all().last().unwrap();
         assert_eq!(
             topics,
-            (symbol_short!("admin"), Symbol::new(&env, "self_remove")).into_val(&env)
+            (symbol_short!("admin"), soroban_sdk::Symbol::new(&env, "self_remove")).into_val(&env)
         );
+
+        assert!(!client.is_admin(&admin));
+        assert!(client.is_admin(&second_admin));
     }
 
     // 17. get_admins returns all admins
@@ -1360,7 +1345,7 @@ mod tests {
     fn test_clear_all_watchers_resets_count() {
         let (env, admin, client) = setup();
         for _ in 0..3 {
-            client.register_watcher(&admin, &Address::generate(&env));
+            client.register_watcher(&admin, &Address::generate(&env), &None);
         }
         assert_eq!(client.get_watcher_count(), 3);
         client.clear_all_watchers(&admin);
@@ -1371,11 +1356,11 @@ mod tests {
     fn test_register_watcher_limit_enforced() {
         let (env, admin, client) = setup();
         for _ in 0..MAX_WATCHERS {
-            client.register_watcher(&admin, &Address::generate(&env));
+            client.register_watcher(&admin, &Address::generate(&env), &None);
         }
         assert_eq!(client.get_watcher_count(), MAX_WATCHERS);
         assert_eq!(
-            client.try_register_watcher(&admin, &Address::generate(&env)),
+            client.try_register_watcher(&admin, &Address::generate(&env), &None),
             Err(Ok(ContractError::WatcherLimitExceeded))
         );
     }
@@ -1601,7 +1586,8 @@ mod tests {
         let (env, admin, client) = setup();
         env.ledger().set_timestamp(100);
         let w = Address::generate(&env);
-        client.register_watcher(&admin, &w, &Some(200));
+        client.register_watcher(&admin, &w, &None);
+        client.renew_watcher(&admin, &w, &Some(200));
         assert!(client.is_authorized(&w));
         env.ledger().set_timestamp(201);
         assert!(!client.is_authorized(&w));
