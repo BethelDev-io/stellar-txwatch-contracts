@@ -70,9 +70,12 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps
 
-      # Issue #105 — Dependency vulnerability scanning
+      # Issue #105 / #476 — Dependency vulnerability scanning.
+      # `cargo audit` exits non-zero on any advisory matching a dependency in
+      # Cargo.lock; `--deny warnings` also fails on unmaintained/yanked crates
+      # so that a high-severity advisory can never pass silently.
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
       - name: Cargo audit
-        run: cargo audit
+        run: cargo audit --deny warnings
