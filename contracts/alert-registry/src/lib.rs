@@ -53,6 +53,9 @@ mod get_rules_registry_tests;
 #[cfg(test)]
 mod batch_tags_tests;
 
+#[cfg(test)]
+mod datakey_unify_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
