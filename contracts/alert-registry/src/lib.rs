@@ -50,6 +50,9 @@ mod rule_edge_tests;
 #[cfg(test)]
 mod get_rules_registry_tests;
 
+#[cfg(test)]
+mod batch_tags_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
