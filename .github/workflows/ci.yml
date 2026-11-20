@@ -52,6 +52,10 @@ jobs:
       - name: Unit tests
         run: cargo test -p alert-registry -p watcher-registry
 
+      # Issue #472 — run feature-gated tests (e.g. gating_tests behind `testutils`)
+      - name: Tests (all features)
+        run: cargo test --all-features
+
       # Issue #300 — Integration test verification (cross-contract behavior)
       - name: Integration tests
         run: cargo test -p integration-tests
