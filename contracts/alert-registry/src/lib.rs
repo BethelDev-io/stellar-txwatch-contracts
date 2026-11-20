@@ -1121,19 +1121,32 @@ impl AlertRegistry {
     }
 
     /// Return the IDs of live alerts watching `target_contract` without
-    /// deserializing the configs. IDs whose storage entry is gone are skipped.
-    #[must_use]
-    pub fn get_alert_ids_for_contract(env: Env, target_contract: Address) -> Vec<u64> {
+    ///
+    /// If a `WatcherRegistry` is configured, `querier` must be a registered
+    /// watcher or the call returns [`ContractError::NotAWatcher`]. ID lists
+    /// reveal the number and existence of alerts, so they are gated (#453).
+    pub fn get_alert_ids_for_contract(
+        env: Env,
+        querier: Address,
+        target_contract: Address,
+    ) -> Result<Vec<u64>, ContractError> {
+        Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
-        Self::live_ids(&env, &ids)
+        Ok(Self::live_ids(&env, &ids))
     }
 
     /// Return the IDs of live alerts owned by `owner` without deserializing
     /// the configs. IDs whose storage entry is gone are skipped.
-    #[must_use]
-    pub fn get_alert_ids_by_owner(env: Env, owner: Address) -> Vec<u64> {
+    ///
+    /// Gated by the watcher registry when one is configured (#453).
+    pub fn get_alert_ids_by_owner(
+        env: Env,
+        querier: Address,
+        owner: Address,
+    ) -> Result<Vec<u64>, ContractError> {
+        Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::owner_index(&env, &owner);
-        Self::live_ids(&env, &ids)
+        Ok(Self::live_ids(&env, &ids))
     }
 
     /// Retrieve only the active alert configs that watch a given contract address.
@@ -3210,8 +3223,8 @@ mod tests {
             ));
         }
         client.remove_alert(&owner, &ids.get(1).unwrap());
-        assert_eq!(client.get_alert_ids_by_owner(&owner).len(), 2);
-        assert_eq!(client.get_alert_ids_for_contract(&target).len(), 2);
+        assert_eq!(client.get_alert_ids_by_owner(&owner, &owner).unwrap().len(), 2);
+        assert_eq!(client.get_alert_ids_for_contract(&target, &target).unwrap().len(), 2);
     }
 
     // #33 — update_target_contract moves the alert to a new contract index
