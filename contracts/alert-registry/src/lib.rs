@@ -52,7 +52,9 @@ mod rule_edge_tests;
 /// Default TTL applied to persistent storage entries on every write.
 ///
 /// Approximately 7 days at the nominal 5-second ledger close time (#249).
-/// See `docs/ttl.md` for the full rationale.
+/// This is intentionally shorter than the `watcher-registry` default (518 400
+/// ledgers, ~30 days): alert data is written often and kept alive per entry,
+/// while the watcher set changes rarely. See `docs/ttl.md`.
 pub const DEFAULT_TTL: u32 = 120_960;
 
 /// Protocol-enforced upper bound on caller-specified TTL values.

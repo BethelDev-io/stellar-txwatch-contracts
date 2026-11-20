@@ -6,6 +6,12 @@ use soroban_sdk::{
 
 /// Number of ledgers to extend instance storage TTL by on each access.
 /// At ~5s per ledger this is roughly 30 days.
+///
+/// This is intentionally about 4.3× the `alert-registry` default
+/// (`120_960`, ~7 days). The watcher set changes rarely, so a longer TTL
+/// keeps the whole registry from being archived during quiet periods. Alert
+/// data is written far more often and is stored per entry, so it uses a
+/// shorter TTL. See `docs/ttl.md`.
 const DEFAULT_TTL: u32 = 518_400;
 
 /// Maximum number of addresses accepted by `batch_register_watchers`.
