@@ -292,6 +292,7 @@ If a `WatcherRegistry` is configured (via `set_watcher_registry`), `querier` mus
 
 | Name | Type | Description |
 |---|---|---|
+| `querier` | `Address` | Address performing the query (gated when a watcher registry is set) |
 | `target_contract` | `Address` | Contract address to query |
 
 **Returns:** `Vec<AlertConfig>` — may be empty.
@@ -304,11 +305,12 @@ Paginated variant of `get_active_alerts_for_contract`. `offset`/`limit` apply to
 
 | Name | Type | Description |
 |---|---|---|
+| `querier` | `Address` | Address performing the query (gated when a watcher registry is set) |
 | `target_contract` | `Address` | Contract address to query |
 | `offset` | `u32` | Number of active alerts to skip |
 | `limit` | `u32` | Max alerts to return |
 
-**Returns:** `Vec<AlertConfig>`
+**Returns:** `Result<Vec<AlertConfig>, ContractError>` — `NotAWatcher` when gated and `querier` is not a watcher.
 
 ---
 

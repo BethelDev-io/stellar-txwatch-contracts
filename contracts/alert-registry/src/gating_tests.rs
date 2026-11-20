@@ -86,3 +86,33 @@ fn removing_a_watcher_mid_test_revokes_read_access() {
     let result = alert.try_get_alerts_for_contract(&watcher_addr, &target);
     assert_eq!(result, Err(Ok(ContractError::NotAWatcher)));
 }
+
+// ── #452: active-alert reads are gated like the other read paths ──────────
+
+#[test]
+fn gate_set_blocks_stranger_on_active_alerts_for_contract() {
+    let (env, alert, watcher, admin) = setup();
+    let watcher_addr = Address::generate(&env);
+    watcher.register_watcher(&admin, &watcher_addr, &None);
+    alert.set_watcher_registry(&admin, &watcher.address);
+
+    let stranger = Address::generate(&env);
+    let target = Address::generate(&env);
+    let result = alert.try_get_active_alerts_for_contract(&stranger, &target);
+    assert_eq!(result, Err(Ok(ContractError::NotAWatcher)));
+
+    // A registered watcher is let through (unknown target has no active alerts).
+    let ok = alert.get_active_alerts_for_contract(&watcher_addr, &target).unwrap();
+    assert_eq!(ok.len(), 0);
+}
+
+#[test]
+fn gate_set_blocks_stranger_on_active_alerts_paginated() {
+    let (env, alert, watcher, admin) = setup();
+    alert.set_watcher_registry(&admin, &watcher.address);
+
+    let stranger = Address::generate(&env);
+    let target = Address::generate(&env);
+    let result = alert.try_get_active_alerts_paginated(&stranger, &target, &0, &10);
+    assert_eq!(result, Err(Ok(ContractError::NotAWatcher)));
+}
