@@ -30,6 +30,9 @@ mod upgrade_roundtrip_tests;
 mod count_consistency_tests;
 
 #[cfg(test)]
+mod contract_alert_count_tests;
+
+#[cfg(test)]
 mod owner_isolation_tests;
 
 #[cfg(all(test, feature = "testutils"))]
@@ -1126,6 +1129,17 @@ impl AlertRegistry {
     pub fn get_alert_ids_for_contract(env: Env, target_contract: Address) -> Vec<u64> {
         let ids = Self::contract_index(&env, &target_contract);
         Self::live_ids(&env, &ids)
+    }
+
+    /// Return the number of live alerts that watch `target_contract`.
+    ///
+    /// Counts exactly the IDs that [`get_alert_ids_for_contract`] would return,
+    /// so IDs whose storage entry has expired or been removed are not counted.
+    /// Returned as `u32`, which maps to `number` in the TypeScript bindings.
+    #[must_use]
+    pub fn get_alert_count_for_contract(env: Env, target_contract: Address) -> u32 {
+        let ids = Self::contract_index(&env, &target_contract);
+        Self::live_ids(&env, &ids).len()
     }
 
     /// Return the IDs of live alerts owned by `owner` without deserializing
