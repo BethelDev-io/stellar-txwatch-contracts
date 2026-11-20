@@ -51,6 +51,9 @@ mod rule_edge_tests;
 mod modified_since_tests;
 
 #[cfg(test)]
+mod active_count_tests;
+
+#[cfg(test)]
 mod modified_since_tests;
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
