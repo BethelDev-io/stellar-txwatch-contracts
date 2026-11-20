@@ -50,6 +50,9 @@ mod rule_edge_tests;
 #[cfg(test)]
 mod propose_webhook_tests;
 
+#[cfg(test)]
+mod set_paused_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -388,8 +391,13 @@ impl AlertRegistry {
     ///
     /// While paused, every mutating entry point returns
     /// [`ContractError::ContractPaused`]. Read-only functions are unaffected.
+    ///
+    /// This entry point intentionally does **not** call `assert_not_paused`.
+    /// Doing so would make it impossible to unpause: the admin could only
+    /// clear the flag through this function. Do not add that gate (#445).
     pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<(), ContractError> {
         admin.require_auth();
+        // Deliberately no `assert_not_paused` here; see the doc comment above.
         Self::assert_admin(&env, &admin)?;
         env.storage().instance().set(&symbol_short!("PAUSED"), &paused);
         let topic = if paused {
