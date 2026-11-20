@@ -4,7 +4,7 @@
 
 ## Prerequisites
 
-- **Node.js** 18 or later (the script uses top-level `async` and `setTimeout` promises).
+- **Node.js** 18 or later (LTS).
 - **`@stellar/stellar-sdk`** 12.x. The repo's bindings pin `12.3.0` (`bindings/watcher-registry/package.json`). Install it with `npm install @stellar/stellar-sdk@^12`.
 - **`tsx`** or another TypeScript runner, for example `npx tsx index.ts`.
 - A deployed **AlertRegistry** contract ID. See `DEPLOYMENTS.md` at the repo root for the current testnet address.
