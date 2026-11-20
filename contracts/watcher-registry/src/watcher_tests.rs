@@ -100,3 +100,30 @@ fn is_authorized_is_true_only_for_registered_watchers() {
     assert!(client.is_authorized(&watcher));
     assert!(!client.is_authorized(&other));
 }
+
+#[test]
+fn watcher_expiry_is_compared_in_timestamp_units_not_sequence() {
+    // Regression for #451: `expires_at` is Unix seconds. Advancing the ledger
+    // *sequence* alone must not expire a watcher, and advancing the *timestamp*
+    // past `expires_at` must.
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+
+    env.ledger().with_mut(|l| {
+        l.timestamp = 1_000;
+        l.sequence_number = 10;
+    });
+    client.register_watcher(&admin, &watcher, &Some(2_000));
+
+    // Huge sequence jump, timestamp still before expiry: still authorized.
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 1_000_000;
+    });
+    assert!(client.is_watcher_authorized(&watcher));
+
+    // Timestamp moves past expiry while sequence is unchanged: deauthorized.
+    env.ledger().with_mut(|l| {
+        l.timestamp = 2_001;
+    });
+    assert!(!client.is_watcher_authorized(&watcher));
+}
