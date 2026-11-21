@@ -48,6 +48,13 @@ fn duplicate_add_admin_is_idempotent() {
 }
 
 #[test]
+fn re_adding_the_same_admin_is_a_noop() {
+    let (_env, client, admin) = setup();
+    client.add_admin(&admin, &admin);
+    assert_eq!(client.get_admins().len(), 1);
+}
+
+#[test]
 fn removing_the_last_admin_is_refused() {
     let (_env, client, admin) = setup();
     assert_eq!(client.try_remove_admin(&admin, &admin), Err(Ok(ContractError::LastAdmin)));
