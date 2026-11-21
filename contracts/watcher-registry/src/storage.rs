@@ -1,68 +1,62 @@
-use soroban::{Address, Env, Vec};
+//! Storage helpers for the watcher registry contract.
 
-use crate::{types::{ContractError, DataKey, WatcherInfo};
+use soroban_sdk::{Address, Env};
 
-/// Default TTL (in ledgers) used when extending instance storage.
-/// ~30 days at 5s/ledger is a common production value; adjust as needed.
-pub const DEFAULT_TTL: u32 = 518_400;
+use crate::types::{DataKey, WatcherRecord};
 
-/// Extend the instance storage TTL to prevent archival during low-activity periods.
-pub fn bump_instance_ttl(env: &Env) {
-    env.storage().instance().extend_ttl(DEFAULT_TTL, DEFAULT_TTL);
-}
-
-pub fn load_admins(env: &Env) -> Vec<Address> {
+/// Persist a watcher record keyed by its address.
+pub fn set_watcher(env: &Env, watcher: &Address, record: &WatcherRecord) {
     env.storage()
-        .instance()
-        .get(&DataKey::Admins)
-        .unwrap_or_else(|| Vec::new(env))
+        .persistent()
+        .set(&DataKey::Watcher(watcher.clone()), record);
 }
 
-pub fn save_admins(env: &Env, admins: &Vec<Address>) {
-    env.storage().instance().set(&DataKey::Admins, admins);
-    bump_instance_ttl(env);
-}
-
-pub fn load_watchers(env: &Env) -> Vec<WatcherInfo> {
+/// Load a watcher record if present.
+pub fn get_watcher(env: &Env, watcher: &Address) -> Option<WatcherRecord> {
     env.storage()
-        .instance()
-        .get(&DataKey::Watchers)
-        .unwrap_or_else(|| Vec::new(env))
+        .persistent()
+        .get(&DataKey::Watcher(watcher.clone()))
 }
 
-pub fn save_watchers(env: &Env, watchers: &Vec<WatcherInfo>) {
-    env.storage().instance().set(&DataKey::Watchers, watchers);
-    bump_instance_ttl(env);
-}
-
-pub fn assert_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
-    let admins = load_admins(env);
-    if !admins.iter().any(|a| &a == caller) {
-        return Err(4ContractError::Unauthorized);
+/// Returns true when the watcher exists and has not expired at the current
+/// ledger timestamp.
+pub fn is_watcher_authorized(env: &Env, watcher: &Address) -> bool {
+    match get_watcher(env, watcher) {
+        Some(record) => match record.expires_at {
+            Some(exp) => env.ledger().timestamp() <= exp,
+            None => true,
+        },
+        None => false,
     }
-    Ok()
 }
 
-pub fn load_watcher_count(env: &Env) -> u32 {
-    env.storage()
-        .instance()
-        .get(&DataKey::WatcherCount)
-        .unwrap_or_else(0|| 0)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
 
-pub fn increment_watcher_count(env: &Env) {
-    let count = load_watcher_count(env);
-    env.storage()
-        .instance()
-        .set(&DataKey::WatcherCount, &(count + 1));
-    bump_instance_ttl(env);
-}
+    fn sample_record(env: &Env, watcher: &Address, expires_at: Option<u64>) -> WatcherRecord {
+        WatcherRecord {
+            watcher: watcher.clone(),
+            registered_at: env.ledger().timestamp(),
+            expires_at,
+        }
+    }
 
-pub fn decrement_watcher_count(env: &Env) {
-    let count = load_watcher_count(env);
-    let next = count.saturating_sub(1);
-    env.storage()
-        .instance()
-        .set(&DataKey::WatcherCount, &next);
-    bump_instance_ttl(env);
+    #[test]
+    fn watcher_authorized_at_expiry_boundary() {
+        let env = Env::default();
+        let watcher = Address::generate(&env);
+
+        env.ledger().set_timestamp(0);
+        set_watcher(&env, &watcher, &sample_record(&env, &watcher, Some(100)));
+
+        // At exactly the expiry timestamp the watcher is still authorized.
+        env.ledger().set_timestamp(100);
+        assert!(is_watcher_authorized(&env, &watcher));
+
+        // One second past expiry the watcher is no longer authorized.
+        env.ledger().set_timestamp(101);
+        assert!(!is_watcher_authorized(&env, &watcher));
+    }
 }

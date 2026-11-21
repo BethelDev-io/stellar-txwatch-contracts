@@ -2,7 +2,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env};
 
 use crate::{ContractError, WatcherRegistry, WatcherRegistryClient};
 
@@ -99,4 +99,17 @@ fn is_authorized_is_true_only_for_registered_watchers() {
     client.register_watcher(&admin, &watcher, &None);
     assert!(client.is_authorized(&watcher));
     assert!(!client.is_authorized(&other));
+}
+
+#[test]
+fn is_watcher_authorized_is_false_after_expiry() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &Some(100));
+
+    env.ledger().set_timestamp(100);
+    assert!(client.is_watcher_authorized(&watcher));
+
+    env.ledger().set_timestamp(101);
+    assert!(!client.is_watcher_authorized(&watcher));
 }
