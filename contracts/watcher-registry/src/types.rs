@@ -13,6 +13,8 @@ pub enum ContractError {
     LastAdmin = 4,
     /// Returned when the specified watcher is not currently registered.
     WatcherNotFound = 5,
+    /// Returned when a mutating entrypoint is called while the contract is paused.
+    ContractPaused = 6,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -26,4 +28,6 @@ pub enum DataKey {
     Watchers,
     /// Stores the running count of authorized watchers.
     WatcherCount,
+    /// Stores the paused flag for the contract.
+    Paused,
 }

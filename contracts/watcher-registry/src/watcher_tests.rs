@@ -2,7 +2,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, Vec};
 
 use crate::{ContractError, WatcherRegistry, WatcherRegistryClient};
 
@@ -121,4 +121,41 @@ fn renew_watcher_with_none_makes_it_permanent_again() {
     client.renew_watcher(&admin, &watcher, &Some(200));
     env.ledger().set_sequence_number(150);
     assert!(client.is_authorized(&watcher));
+}
+
+#[test]
+fn paused_registry_blocks_mutations_but_allows_reads() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None);
+
+    client.pause(&admin);
+    assert!(client.is_paused());
+
+    // Mutations are blocked while paused.
+    let new_watcher = Address::generate(&env);
+    assert_eq!(
+        client.try_register_watcher(&admin, &new_watcher, &None),
+        Err(Ok(ContractError::ContractPaused))
+    );
+    assert_eq!(
+        client.try_remove_watcher(&admin, &watcher),
+        Err(Ok(ContractError::ContractPaused))
+    );
+    let new_admin = Address::generate(&env);
+    assert_eq!(
+        client.try_add_admin(&admin, &new_admin),
+        Err(Ok(ContractError::ContractPaused))
+    );
+    let mut batch = Vec::new(&env);
+    batch.push_back(Address::generate(&env));
+    assert_eq!(
+        client.try_batch_register_watchers(&admin, &batch),
+        Err(Ok(ContractError::ContractPaused))
+    );
+
+    // Reads still succeed while paused.
+    assert!(client.is_watcher_authorized(&watcher));
+    assert_eq!(client.get_watchers().len(), 1);
+    assert!(client.is_paused());
 }
