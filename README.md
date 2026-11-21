@@ -341,3 +341,6 @@ let config_id = alert_registry.register_alert(
 
 <!-- handsoff-issue-394 -->
 - #394: test: add test for get_active_alerts_for_contract excludes inactive alerts
+
+<!-- handsoff-issue-397 -->
+- #397: test: add test for get_alerts_modified_since returns only alerts updated at or after timestamp
