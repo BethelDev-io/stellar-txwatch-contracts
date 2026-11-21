@@ -2,7 +2,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, Address, Env, IntoVal, Symbol};
 
 use crate::{ContractError, WatcherRegistry, WatcherRegistryClient};
 
@@ -88,6 +88,27 @@ fn clear_all_watchers_empties_the_list() {
     client.register_watcher(&admin, &Address::generate(&env), &None);
     client.register_watcher(&admin, &Address::generate(&env), &None);
     client.clear_all_watchers(&admin);
+    assert_eq!(client.get_watcher_count(), 0);
+}
+
+#[test]
+fn clear_all_watchers_emits_one_remove_event_per_watcher() {
+    let (env, client, admin) = setup();
+    client.register_watcher(&admin, &Address::generate(&env), &None);
+    client.register_watcher(&admin, &Address::generate(&env), &None);
+    client.register_watcher(&admin, &Address::generate(&env), &None);
+    assert_eq!(client.get_watcher_count(), 3);
+
+    client.clear_all_watchers(&admin);
+
+    let remove_topic = (Symbol::new(&env, "watcher"), Symbol::new(&env, "remove"));
+    let remove_events = env
+        .events()
+        .all()
+        .iter()
+        .filter(|event| event.topics == remove_topic.into_val(&env))
+        .count();
+    assert_eq!(remove_events, 3);
     assert_eq!(client.get_watcher_count(), 0);
 }
 
