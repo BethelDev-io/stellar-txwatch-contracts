@@ -2,7 +2,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env};
 
 use crate::{ContractError, WatcherRegistry, WatcherRegistryClient};
 
@@ -99,4 +99,26 @@ fn is_authorized_is_true_only_for_registered_watchers() {
     client.register_watcher(&admin, &watcher, &None);
     assert!(client.is_authorized(&watcher));
     assert!(!client.is_authorized(&other));
+}
+
+#[test]
+fn renew_watcher_with_none_makes_it_permanent_again() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+
+    // Register with an expiry at ledger 50.
+    client.register_watcher(&admin, &watcher, &Some(50));
+    assert!(client.is_authorized(&watcher));
+
+    // Renew with None to clear the expiry, making it permanent again.
+    client.renew_watcher(&admin, &watcher, &None);
+
+    // Advance the ledger past the original expiry and assert still authorized.
+    env.ledger().set_sequence_number(100);
+    assert!(client.is_authorized(&watcher));
+
+    // Renew with a future expiry and assert still authorized within the window.
+    client.renew_watcher(&admin, &watcher, &Some(200));
+    env.ledger().set_sequence_number(150);
+    assert!(client.is_authorized(&watcher));
 }
