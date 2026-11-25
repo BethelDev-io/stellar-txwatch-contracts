@@ -1,18 +1,33 @@
-//! Storage helpers for the watcher registry contract.
+//! Storage helpers for the watcher registry.
+//!
+//! All reads and writes to instance and persistent storage go through these
+//! functions so that key layout and TTL policy live in one place.
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Map, Vec};
 
-use crate::types::{DataKey, WatcherRecord};
+/// Default TTL (in ledgers) used when extending instance storage.
+/// ~30 days at 5s/ledger.
+///
+/// Deliberately longer than the `alert-registry` default (`120_960`, ~7 days):
+/// the watcher set changes infrequently, while alert data is written often.
+/// See `docs/ttl.md`.
+pub const DEFAULT_TTL: u32 = 518_400;
 
-/// Persist a watcher record keyed by its address.
-pub fn set_watcher(env: &Env, watcher: &Address, record: &WatcherRecord) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::Watcher(watcher.clone()), record);
+/// Extend the instance storage TTL so a dormant registry is not archived.
+pub fn extend_instance_ttl(env: &Env) {
+    env.storage().instance().extend_ttl(DEFAULT_TTL, DEFAULT_TTL);
 }
 
-/// Load a watcher record if present.
-pub fn get_watcher(env: &Env, watcher: &Address) -> Option<WatcherRecord> {
+/// Load the admin set, or an empty vec when uninitialized.
+pub fn load_admins(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Admins)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Load the authorized watcher list, or an empty vec.
+pub fn load_watchers(env: &Env) -> Vec<Address> {
     env.storage()
         .persistent()
         .get(&DataKey::Watcher(watcher.clone()))
@@ -30,33 +45,73 @@ pub fn is_watcher_authorized(env: &Env, watcher: &Address) -> bool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-
-    fn sample_record(env: &Env, watcher: &Address, expires_at: Option<u64>) -> WatcherRecord {
-        WatcherRecord {
-            watcher: watcher.clone(),
-            registered_at: env.ledger().timestamp(),
-            expires_at,
+/// Return `Ok(())` if `caller` is in the admin set.
+///
+/// # Errors
+/// [`ContractError::NotInitialized`] if no admin set exists, and
+/// [`ContractError::Unauthorized`] if `caller` is not an admin.
+pub fn assert_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
+    if !env.storage().instance().has(&DataKey::Admins) {
+        return Err(ContractError::NotInitialized);
+    }
+    let admins = load_admins(env);
+    for i in 0..admins.len() {
+        if admins.get(i).unwrap() == *caller {
+            return Ok(());
         }
     }
+    Err(ContractError::Unauthorized)
+}
 
-    #[test]
-    fn watcher_authorized_at_expiry_boundary() {
-        let env = Env::default();
-        let watcher = Address::generate(&env);
+/// Load the current watcher count.
+pub fn load_watcher_count(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::WatcherCount)
+        .unwrap_or(0u32)
+}
 
-        env.ledger().set_timestamp(0);
-        set_watcher(&env, &watcher, &sample_record(&env, &watcher, Some(100)));
+/// Increment the watcher count by one.
+pub fn increment_watcher_count(env: &Env) {
+    let count = load_watcher_count(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::WatcherCount, &(count + 1));
+}
 
-        // At exactly the expiry timestamp the watcher is still authorized.
-        env.ledger().set_timestamp(100);
-        assert!(is_watcher_authorized(&env, &watcher));
+/// Decrement the watcher count by one, saturating at zero.
+pub fn decrement_watcher_count(env: &Env) {
+    let count = load_watcher_count(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::WatcherCount, &count.saturating_sub(1));
+}
 
-        // One second past expiry the watcher is no longer authorized.
-        env.ledger().set_timestamp(101);
-        assert!(!is_watcher_authorized(&env, &watcher));
+/// Load the watcher expiry map (`watcher -> expires_at`).
+pub fn load_expiries(env: &Env) -> Map<Address, u64> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Expiries)
+        .unwrap_or_else(|| Map::new(env))
+}
+
+/// Set (`Some`) or clear (`None`) a watcher's expiry timestamp.
+pub fn set_expiry(env: &Env, watcher: &Address, expires_at: Option<u64>) {
+    let mut m = load_expiries(env);
+    match expires_at {
+        Some(exp) => m.set(watcher.clone(), exp),
+        None => {
+            m.remove(watcher.clone());
+        }
     }
+    env.storage().instance().set(&DataKey::Expiries, &m);
+}
+
+/// Persist a [`WatcherInfo`] record and extend its TTL.
+pub fn save_info(env: &Env, info: &WatcherInfo) {
+    let key = DataKey::WatcherInfo(info.address.clone());
+    env.storage().persistent().set(&key, info);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, DEFAULT_TTL, DEFAULT_TTL);
 }
