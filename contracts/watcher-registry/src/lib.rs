@@ -771,6 +771,7 @@ impl WatcherRegistry {
     }
 
     /// Set (`Some`) or clear (`None`) a watcher's expiry timestamp.
+    /// `expires_at` is a timestamp in Unix seconds (`ledger().timestamp()` units).
     fn set_expiry(env: &Env, watcher: &Address, expires_at: Option<u64>) {
         let mut m = Self::load_expiries(env);
         match expires_at {

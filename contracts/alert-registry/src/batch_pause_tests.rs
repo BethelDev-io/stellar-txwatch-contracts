@@ -126,8 +126,8 @@ fn test_get_active_alerts_paginated() {
         ));
     }
     client.update_alert(&owner, &ids.get(0).unwrap(), &vec![&env, str(&env, "rule:transfer")], &false);
-    assert_eq!(client.get_active_alerts_paginated(&target, &0, &10).len(), 2);
-    assert_eq!(client.get_active_alerts_paginated(&target, &1, &10).len(), 1);
+    assert_eq!(client.get_active_alerts_paginated(&target, &target, &0, &10).unwrap().len(), 2);
+    assert_eq!(client.get_active_alerts_paginated(&target, &target, &1, &10).unwrap().len(), 1);
 }
 
 /// Issue #497: a single `batch_register_alerts` call at exactly `MAX_BATCH_SIZE`

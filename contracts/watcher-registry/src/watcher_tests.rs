@@ -54,6 +54,23 @@ fn removing_the_last_admin_is_refused() {
 }
 
 #[test]
+fn remove_admin_for_non_admin_returns_not_admin_and_changes_nothing() {
+    let (env, client, admin) = setup();
+    let second = Address::generate(&env);
+    client.add_admin(&admin, &second);
+    let stranger = Address::generate(&env);
+
+    assert_eq!(
+        client.try_remove_admin(&admin, &stranger),
+        Err(Ok(ContractError::NotAdmin))
+    );
+    let admins = client.get_admins();
+    assert_eq!(admins.len(), 2);
+    assert!(admins.contains(&admin));
+    assert!(admins.contains(&second));
+}
+
+#[test]
 fn transfer_admin_replaces_the_admin_set() {
     let (env, client, admin) = setup();
     let new_admin = Address::generate(&env);
