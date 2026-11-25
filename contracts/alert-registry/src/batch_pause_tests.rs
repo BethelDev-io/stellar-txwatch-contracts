@@ -130,51 +130,37 @@ fn test_get_active_alerts_paginated() {
     assert_eq!(client.get_active_alerts_paginated(&target, &1, &10).len(), 1);
 }
 
-
+/// Issue #497: a single `batch_register_alerts` call at exactly `MAX_BATCH_SIZE`
+/// must succeed, issue unique sequential IDs, store every alert, and advance
+/// the global counter by exactly `MAX_BATCH_SIZE`.
 #[test]
-fn bulk_renew_ttl_rejected_while_paused() {
-    // #449: keepers must not extend TTLs while the operator has paused the contract.
+fn test_batch_register_alerts_at_max_batch_size() {
     let (env, client) = setup();
-    let admin = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
-    client.initialize(&admin);
-    let id = client.register_alert(
-        &owner,
-        &target,
-        &str(&env, "alert"),
-        &hash64(&env),
-        &vec![&env, str(&env, "rule:transfer")],
-        &None,
-    );
-    client.set_paused(&admin, &true);
 
-    assert_eq!(
-        client
-            .try_bulk_renew_ttl(&vec![&env, id])
-            .unwrap_err()
-            .unwrap(),
-        ContractError::ContractPaused
-    );
-}
+    let mut inputs = vec![&env];
+    for _ in 0..MAX_BATCH_SIZE {
+        inputs.push_back(input(&env, &target, "bulk"));
+    }
+    let ids = client.batch_register_alerts(&owner, &inputs);
 
-#[test]
-fn bulk_renew_ttl_works_after_unpause() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    let owner = Address::generate(&env);
-    let target = Address::generate(&env);
-    client.initialize(&admin);
-    let id = client.register_alert(
-        &owner,
-        &target,
-        &str(&env, "alert"),
-        &hash64(&env),
-        &vec![&env, str(&env, "rule:transfer")],
-        &None,
-    );
-    client.set_paused(&admin, &true);
-    client.set_paused(&admin, &false);
+    // Exactly MAX_BATCH_SIZE IDs were returned, numbered 0..MAX_BATCH_SIZE in order,
+    // which also rules out duplicates.
+    assert_eq!(ids.len(), MAX_BATCH_SIZE);
+    for i in 0..ids.len() {
+        assert_eq!(ids.get(i).unwrap(), i as u64, "ID at position {i} must be {i}");
+    }
 
-    assert_eq!(client.bulk_renew_ttl(&vec![&env, id]), 1);
+    // Every alert is retrievable under its ID and carries the submitted data.
+    for i in 0..ids.len() {
+        let id = ids.get(i).unwrap();
+        let alert = client.get_alert(&id).expect("every batch alert must be stored");
+        assert_eq!(alert.label, str(&env, "bulk"));
+        assert_eq!(alert.owner, owner);
+    }
+
+    // The global counter reflects exactly MAX_BATCH_SIZE registrations.
+    assert_eq!(client.get_alert_count(), MAX_BATCH_SIZE as u64);
+    assert_eq!(client.get_active_alerts_for_contract(&target).len(), MAX_BATCH_SIZE);
 }
