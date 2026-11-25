@@ -28,6 +28,8 @@ Initializes the registry with an admin address. Can only be called once.
 
 Adds an address to the authorized watcher set. Idempotent — registering an already-registered watcher is a no-op.
 
+The set is capped at `MAX_WATCHERS` (100). A registration that would exceed the cap returns `ContractError::WatcherLimitExceeded`.
+
 **Requires auth:** `admin`
 
 **Parameters**
@@ -80,9 +82,9 @@ Renamed from `is_authorized` for clarity in cross-contract call contexts — the
 
 ---
 
-### `get_watchers`
+### `get_watchers` (deprecated)
 
-Returns all currently authorized watcher addresses.
+Deprecated alias for `get_all_watchers`. It returns the same result and is kept for one release so existing callers can migrate. New code should call `get_all_watchers`.
 
 **Parameters:** none
 
@@ -223,7 +225,15 @@ Returns the admin set. Read-only.
 register_watcher(env, admin, watcher, label: Option<String>) -> Result<(), ContractError>
 ```
 
-`label` is optional (max 64 bytes, defaults to empty; longer returns `LabelTooLong` = 7). Each watcher gets a `WatcherInfo { address, label, registered_at, registered_by }` entry in persistent storage keyed by address. The `Watchers` vec stays as the enumeration index and `is_authorized` is an O(1) lookup.
+`label` is optional (max 64 bytes, defaults to empty; longer returns `LabelTooLong` = 10). Each watcher gets a `WatcherInfo { address, label, registered_at, registered_by }` entry in persistent storage keyed by address. The `Watchers` vec stays as the enumeration index and `is_authorized` is an O(1) lookup.
+
+### `get_watcher_registered_at`
+
+```
+get_watcher_registered_at(env, watcher: Address) -> Option<u64>
+```
+
+Returns the ledger timestamp at which `watcher` was registered (#426), read from `WatcherInfo.registered_at`. Returns `None` if the watcher is not registered (including after removal). Read-only, no auth.
 
 ### `get_watcher_info`
 
