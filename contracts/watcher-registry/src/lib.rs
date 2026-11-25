@@ -26,6 +26,12 @@ pub const MAX_BATCH_SIZE: u32 = 20;
 /// starts being emitted on registration.
 pub const CAPACITY_WARN_PERCENT: u32 = 80;
 
+/// Maximum byte length of a watcher label.
+pub const MAX_LABEL_BYTES: u32 = 64;
+
+/// Maximum page size for paginated watcher reads.
+pub const MAX_PAGE_LIMIT: u32 = 50;
+
 // ── Errors ────────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -587,6 +593,20 @@ impl WatcherRegistry {
     /// the name now makes explicit *what* the address is being authorized as.
     #[must_use]
     pub fn is_watcher_authorized(env: Env, watcher: Address) -> bool {
+        let now = env.ledger().timestamp();
+        Self::is_watcher_authorized_at(env, watcher, now)
+    }
+
+    /// Check whether `watcher` was (or is) authorized at the ledger timestamp `at`.
+    ///
+    /// Intended for time-locked checks such as dispute resolution, where the
+    /// question is "was this watcher authorized at time T?" rather than "is it
+    /// authorized now?". Returns `true` when the watcher is registered and either
+    /// has no expiry or `at <= expiry`; `false` when the watcher is not registered.
+    ///
+    /// This is a read-only query: no auth is required and it works while paused.
+    #[must_use]
+    pub fn is_watcher_authorized_at(env: Env, watcher: Address, at: u64) -> bool {
         Self::extend_instance_ttl(&env);
         let watchers = Self::load_watchers(&env);
         for i in 0..watchers.len() {
@@ -643,6 +663,13 @@ impl WatcherRegistry {
     #[must_use]
     pub fn get_watchers(env: Env) -> Vec<Address> {
         storage::load_watchers(&env)
+    }
+
+    /// Return the ledger timestamp at which `watcher` was registered, or `None`
+    /// if it is not registered. Read-only, no auth (#426).
+    #[must_use]
+    pub fn get_watcher_registered_at(env: Env, watcher: Address) -> Option<u64> {
+        Self::get_watcher_info(env, watcher).map(|info| info.registered_at)
     }
 
     /// Get all current admin addresses.

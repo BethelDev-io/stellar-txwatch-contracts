@@ -54,6 +54,9 @@ mod event_assert_tests;
 mod pagination_boundary_tests;
 
 #[cfg(test)]
+mod delegation_tests;
+
+#[cfg(test)]
 mod rule_edge_tests;
 
 #[cfg(test)]
@@ -468,6 +471,10 @@ impl AlertRegistry {
     /// Once set, `get_alerts_for_contract`, `get_alerts_by_owner`, and their
     /// paginated variants will cross-call `WatcherRegistry::is_watcher_authorized`
     /// before returning data. Pass the zero address to disable gating.
+    ///
+    /// # Events
+    /// Emits `(Symbol("admin"), Symbol("watcher_reg"))` with data
+    /// `(admin: Address, watcher_registry: Address)` on every successful call.
     ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `admin`.
@@ -1090,6 +1097,40 @@ impl AlertRegistry {
         Ok(())
     }
 
+    /// Extend the TTL of every storage entry that keeps an alert live (#212, #254).
+    ///
+    /// Shared by [`AlertRegistry::bump_alert`] and [`AlertRegistry::renew_alert_ttl`].
+    fn extend_alert_entries(env: &Env, config: &AlertConfig, config_id: u64, effective_ttl: u32) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Alert(config_id), effective_ttl, effective_ttl);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::AlertActive(config_id), effective_ttl, effective_ttl);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), effective_ttl, effective_ttl);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::ContractIndex(config.target_contract.clone()), effective_ttl, effective_ttl);
+        // Also extend the global ID counter (issue #212).  NextId must not
+        // expire independently of the alert entries it produced — if it did,
+        // the next registration would restart from 0 and collide with live IDs.
+        if env.storage().persistent().has(&DataKey::NextId) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::NextId, effective_ttl, effective_ttl);
+        }
+
+        // Fix #212: also extend the NextId counter so it cannot expire independently
+        // of alert data when a contract only receives TTL renewals and no new
+        // registrations.  Without this, the counter could drop from storage and the
+        // next register_alert would restart from 0, causing ID collisions.
+        env.storage()
+            .instance()
+            .extend_ttl(effective_ttl, effective_ttl);
+    }
+
     /// Extend the TTL of an alert and its associated indexes.
     ///
     /// Callers may request any TTL up to [`MAX_TTL`] ledgers.  Values above
@@ -1128,40 +1169,107 @@ impl AlertRegistry {
             .get(&DataKey::Alert(config_id))
             .ok_or(ContractError::AlertNotFound)?;
 
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), effective_ttl, effective_ttl);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::AlertActive(config_id), effective_ttl, effective_ttl);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), effective_ttl, effective_ttl);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::ContractIndex(config.target_contract), effective_ttl, effective_ttl);
-        // Also extend the global ID counter (issue #212).  NextId must not
-        // expire independently of the alert entries it produced — if it did,
-        // the next registration would restart from 0 and collide with live IDs.
-        if env.storage().persistent().has(&DataKey::NextId) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::NextId, effective_ttl, effective_ttl);
-        }
-
-        // Fix #212: also extend the NextId counter so it cannot expire independently
-        // of alert data when a contract only receives TTL renewals and no new
-        // registrations.  Without this, the counter could drop from storage and the
-        // next register_alert would restart from 0, causing ID collisions.
-        env.storage()
-            .instance()
-            .extend_ttl(effective_ttl, effective_ttl);
+        Self::extend_alert_entries(&env, &config, config_id, effective_ttl);
 
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("bump")),
             (config_id, effective_ttl),
         );
 
+        Ok(())
+    }
+
+    /// Set (`Some`) or clear (`None`) the delegate allowed to renew one alert's TTL (#425).
+    ///
+    /// Only the alert owner may change the delegate. Passing `None` revokes access
+    /// immediately. A delegate may call [`AlertRegistry::renew_alert_ttl`] but cannot
+    /// transfer, update or remove the alert.
+    ///
+    /// # Errors
+    /// [`ContractError::AlertNotFound`] if `config_id` does not exist;
+    /// [`ContractError::Unauthorized`] if `caller` is not the alert owner.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`.
+    pub fn set_delegate(
+        env: Env,
+        caller: Address,
+        config_id: u64,
+        delegate: Option<Address>,
+    ) -> Result<(), ContractError> {
+        Self::assert_not_paused(&env)?;
+        caller.require_auth();
+
+        let config: AlertConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Alert(config_id))
+            .ok_or(ContractError::AlertNotFound)?;
+        Self::assert_owner(&config, &caller)?;
+
+        match delegate {
+            Some(d) => {
+                env.storage().persistent().set(&DataKey::Delegate(config_id), &d);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&DataKey::Delegate(config_id), DEFAULT_TTL, DEFAULT_TTL);
+            }
+            None => env.storage().persistent().remove(&DataKey::Delegate(config_id)),
+        }
+        Ok(())
+    }
+
+    /// Return the current delegate for an alert, or `None` if none is set (#425).
+    #[must_use]
+    pub fn get_delegate(env: Env, config_id: u64) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Delegate(config_id))
+    }
+
+    /// Extend an alert's TTL on behalf of its owner or its delegate (#425).
+    ///
+    /// The caller must be the alert owner or the delegate set by
+    /// [`AlertRegistry::set_delegate`]. The alert's data is not modified. The TTL
+    /// is extended by [`DEFAULT_TTL`].
+    ///
+    /// # Errors
+    /// [`ContractError::AlertNotFound`] if `config_id` does not exist;
+    /// [`ContractError::Unauthorized`] if `caller` is neither owner nor delegate.
+    ///
+    /// # Events
+    /// Emits `(Symbol("alert"), Symbol("bump"))` with data `(id, DEFAULT_TTL)`, the
+    /// same event shape as [`AlertRegistry::bump_alert`].
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`.
+    pub fn renew_alert_ttl(
+        env: Env,
+        caller: Address,
+        config_id: u64,
+    ) -> Result<(), ContractError> {
+        Self::assert_not_paused(&env)?;
+        caller.require_auth();
+
+        let config: AlertConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Alert(config_id))
+            .ok_or(ContractError::AlertNotFound)?;
+
+        let is_delegate = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Delegate(config_id))
+            .is_some_and(|d| d == caller);
+        if config.owner != caller && !is_delegate {
+            return Err(ContractError::Unauthorized);
+        }
+
+        Self::extend_alert_entries(&env, &config, config_id, DEFAULT_TTL);
+
+        env.events().publish(
+            (symbol_short!("alert"), symbol_short!("bump")),
+            (config_id, DEFAULT_TTL),
+        );
         Ok(())
     }
 
@@ -1969,6 +2077,9 @@ impl AlertRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::AlertActive(config_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Delegate(config_id));
 
         Self::remove_from_owner_index(env, &config.owner, config_id);
         Self::remove_from_contract_index(env, &config.target_contract, config_id);
@@ -2651,7 +2762,7 @@ mod tests {
         let target = Address::generate(&env);
 
         watcher_client.initialize(&admin);
-        watcher_client.register_watcher(&admin, &watcher, &None);
+        watcher_client.register_watcher(&admin, &watcher, &None, &None);
 
         // Point alert registry at the watcher registry
         alert_client.initialize(&admin).unwrap();
@@ -2728,7 +2839,7 @@ mod tests {
         let target = Address::generate(&env);
 
         watcher_client.initialize(&admin);
-        watcher_client.register_watcher(&admin, &watcher, &None);
+        watcher_client.register_watcher(&admin, &watcher, &None, &None);
 
         alert_client.initialize(&admin).unwrap();
         let watcher_contract_id = watcher_client.address.clone();

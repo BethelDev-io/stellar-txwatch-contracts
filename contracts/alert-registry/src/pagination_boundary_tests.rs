@@ -6,6 +6,7 @@
 
 #![cfg(test)]
 
+extern crate alloc;
 use soroban_sdk::{testutils::Address as _, vec, Address, Env, String};
 
 use crate::{AlertRegistry, AlertRegistryClient, MAX_BATCH_SIZE};

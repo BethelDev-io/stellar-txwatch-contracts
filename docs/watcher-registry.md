@@ -225,7 +225,15 @@ Returns the admin set. Read-only.
 register_watcher(env, admin, watcher, label: Option<String>) -> Result<(), ContractError>
 ```
 
-`label` is optional (max 64 bytes, defaults to empty; longer returns `LabelTooLong` = 7). Each watcher gets a `WatcherInfo { address, label, registered_at, registered_by }` entry in persistent storage keyed by address. The `Watchers` vec stays as the enumeration index and `is_authorized` is an O(1) lookup.
+`label` is optional (max 64 bytes, defaults to empty; longer returns `LabelTooLong` = 10). Each watcher gets a `WatcherInfo { address, label, registered_at, registered_by }` entry in persistent storage keyed by address. The `Watchers` vec stays as the enumeration index and `is_authorized` is an O(1) lookup.
+
+### `get_watcher_registered_at`
+
+```
+get_watcher_registered_at(env, watcher: Address) -> Option<u64>
+```
+
+Returns the ledger timestamp at which `watcher` was registered (#426), read from `WatcherInfo.registered_at`. Returns `None` if the watcher is not registered (including after removal). Read-only, no auth.
 
 ### `get_watcher_info`
 
