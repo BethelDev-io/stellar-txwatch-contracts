@@ -4,6 +4,8 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, vec, Address, Env, Symbol, Vec,
 };
 
+mod guards;
+
 /// Number of ledgers to extend instance storage TTL by on each access.
 /// At ~5s per ledger this is roughly 30 days.
 const DEFAULT_TTL: u32 = 518_400;
@@ -103,7 +105,8 @@ impl WatcherRegistry {
         new_admin: Address,
     ) -> Result<(), ContractError> {
         caller.require_auth();
-        Self::assert_admin(&env, &caller)?;
+        guards::assert_admin(&env, &caller)?;
+        guards::assert_not_paused(&env)?;
 
         let mut admins = Self::load_admins(&env);
         for i in 0..admins.len() {
@@ -143,7 +146,8 @@ impl WatcherRegistry {
         target_admin: Address,
     ) -> Result<(), ContractError> {
         caller.require_auth();
-        Self::assert_admin(&env, &caller)?;
+        guards::assert_admin(&env, &caller)?;
+        guards::assert_not_paused(&env)?;
 
         let admins = Self::load_admins(&env);
         if admins.len() <= 1 {
@@ -192,7 +196,12 @@ impl WatcherRegistry {
         new_admin: Address,
     ) -> Result<(), ContractError> {
         admin.require_auth();
-        Self::assert_admin(&env, &admin)?;
+        guards::assert_admin(&env, &admin)?;
+        guards::assert_not_paused(&env)?;
+
+        if Self::load_admins(&env).len() > 1 {
+            return Err(ContractError::MultipleAdminsExist);
+        }
 
         let new_admins: Vec<Address> = vec![&env, new_admin.clone()];
         env.storage().instance().set(&DataKey::Admins, &new_admins);
@@ -216,7 +225,8 @@ impl WatcherRegistry {
         watcher: Address,
     ) -> Result<(), ContractError> {
         admin.require_auth();
-        Self::assert_admin(&env, &admin)?;
+        guards::assert_admin(&env, &admin)?;
+        guards::assert_not_paused(&env)?;
 
         let mut watchers = Self::load_watchers(&env);
         for i in 0..watchers.len() {
@@ -261,7 +271,8 @@ impl WatcherRegistry {
         watcher: Address,
     ) -> Result<(), ContractError> {
         admin.require_auth();
-        Self::assert_admin(&env, &admin)?;
+        guards::assert_admin(&env, &admin)?;
+        guards::assert_not_paused(&env)?;
 
         let watchers = Self::load_watchers(&env);
         let mut updated: Vec<Address> = vec![&env];
@@ -376,7 +387,8 @@ impl WatcherRegistry {
         new_watcher: Address,
     ) -> Result<(), ContractError> {
         admin.require_auth();
-        Self::assert_admin(&env, &admin)?;
+        guards::assert_admin(&env, &admin)?;
+        guards::assert_not_paused(&env)?;
 
         let watchers = Self::load_watchers(&env);
         let mut found = false;
@@ -424,6 +436,111 @@ impl WatcherRegistry {
         Ok(())
     }
 
+    /// Register up to [`MAX_BATCH_SIZE`] watchers in one call.
+    ///
+    /// Already-registered and duplicate addresses are skipped. Returns the
+    /// number of newly registered watchers and emits one `("watcher",
+    /// "register")` event for each.
+    ///
+    /// # Errors
+    /// [`ContractError::BatchTooLarge`] if `watchers.len() > MAX_BATCH_SIZE`;
+    /// [`ContractError::WatcherLimitExceeded`] if the total would exceed
+    /// [`MAX_WATCHERS`].
+    pub fn batch_register_watchers(
+        env: Env,
+        admin: Address,
+        watchers: Vec<Address>,
+    ) -> Result<u32, ContractError> {
+        admin.require_auth();
+        guards::assert_admin(&env, &admin)?;
+        guards::assert_not_paused(&env)?;
+
+        if watchers.len() > MAX_BATCH_SIZE {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let mut stored = Self::load_watchers(&env);
+        let mut added: Vec<Address> = vec![&env];
+        for i in 0..watchers.len() {
+            let w = watchers.get(i).unwrap();
+            if !stored.contains(&w) {
+                stored.push_back(w.clone());
+                added.push_back(w);
+            }
+        }
+        if stored.len() > MAX_WATCHERS {
+            return Err(ContractError::WatcherLimitExceeded);
+        }
+
+        env.storage().instance().set(&DataKey::Watchers, &stored);
+        Self::extend_instance_ttl(&env);
+        for i in 0..added.len() {
+            let w = added.get(i).unwrap();
+            Self::increment_watcher_count(&env);
+            env.events()
+                .publish((symbol_short!("watcher"), symbol_short!("register")), w);
+        }
+
+        Ok(added.len())
+    }
+
+    /// Set or clear the expiry of an already-registered watcher.
+    ///
+    /// Passing `None` makes the authorization permanent again.
+    ///
+    /// # Errors
+    /// [`ContractError::WatcherNotFound`] if `watcher` is not registered.
+    pub fn renew_watcher(
+        env: Env,
+        admin: Address,
+        watcher: Address,
+        new_expiry: Option<u64>,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        guards::assert_admin(&env, &admin)?;
+        guards::assert_not_paused(&env)?;
+
+        if !Self::load_watchers(&env).contains(&watcher) {
+            return Err(ContractError::WatcherNotFound);
+        }
+        Self::set_expiry(&env, &watcher, new_expiry);
+        Self::extend_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("watcher"), symbol_short!("renew")),
+            (watcher, new_expiry),
+        );
+        Ok(())
+    }
+
+    /// Pause or unpause the registry (circuit breaker). Any admin may call this.
+    ///
+    /// While paused, all mutating entrypoints except this one return
+    /// [`ContractError::ContractPaused`]; reads and `is_authorized` keep working.
+    pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<(), ContractError> {
+        admin.require_auth();
+        guards::assert_admin(&env, &admin)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        Self::extend_instance_ttl(&env);
+
+        let topic = if paused {
+            symbol_short!("pause")
+        } else {
+            symbol_short!("unpause")
+        };
+        env.events().publish((symbol_short!("admin"), topic), admin);
+        Ok(())
+    }
+
+    /// Return `true` if the registry is currently paused.
+    #[must_use]
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     /// Check if an address is an authorized watcher.
     ///
     /// Renamed from `is_authorized` for clarity in cross-contract call contexts —
@@ -457,7 +574,8 @@ impl WatcherRegistry {
     /// existing admin.
     pub fn clear_all_watchers(env: Env, admin: Address) -> Result<(), ContractError> {
         admin.require_auth();
-        Self::assert_admin(&env, &admin)?;
+        guards::assert_admin(&env, &admin)?;
+        guards::assert_not_paused(&env)?;
 
         let watchers = Self::load_watchers(&env);
         for i in 0..watchers.len() {
@@ -577,6 +695,25 @@ impl WatcherRegistry {
         }
     }
 
+    fn load_expiries(env: &Env) -> Map<Address, u64> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Expiries)
+            .unwrap_or_else(|| Map::new(env))
+    }
+
+    /// Set (`Some`) or clear (`None`) a watcher's expiry timestamp.
+    fn set_expiry(env: &Env, watcher: &Address, expires_at: Option<u64>) {
+        let mut m = Self::load_expiries(env);
+        match expires_at {
+            Some(exp) => m.set(watcher.clone(), exp),
+            None => {
+                m.remove(watcher.clone());
+            }
+        }
+        env.storage().instance().set(&DataKey::Expiries, &m);
+    }
+
     /// Load the current watcher list from instance storage, or return an empty vec.
     fn load_watchers(env: &Env) -> Vec<Address> {
         env.storage()
@@ -591,20 +728,6 @@ impl WatcherRegistry {
             .instance()
             .get(&DataKey::Admins)
             .unwrap_or_else(|| vec![env])
-    }
-
-    /// Return `Ok(())` if `caller` is in the admin set, `Err(Unauthorized)` otherwise.
-    fn assert_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
-        if !env.storage().instance().has(&DataKey::Admins) {
-            return Err(ContractError::NotInitialized);
-        }
-        let admins = Self::load_admins(env);
-        for i in 0..admins.len() {
-            if admins.get(i).unwrap() == *caller {
-                return Ok(());
-            }
-        }
-        Err(ContractError::Unauthorized)
     }
 }
 
