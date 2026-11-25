@@ -1,7 +1,7 @@
 ﻿#![no_std]
 #![warn(clippy::pedantic)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, vec, Address, Env, String, TryFromVal, Val, Vec,
+    contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, vec, Address, Env, IntoVal, String, TryFromVal, Val, Vec,
 };
 
 // ── Storage keys ────────────────────────────────────────────────────────────
@@ -56,6 +56,9 @@ mod pagination_boundary_tests;
 #[cfg(test)]
 mod rule_edge_tests;
 
+#[cfg(test)]
+mod bump_next_id_tests;
+
 // ── TTL constants ─────────────────────────────────────────────────────────────
 
 /// Default TTL applied to persistent storage entries on every write.
@@ -63,6 +66,20 @@ mod rule_edge_tests;
 /// Approximately 7 days at the nominal 5-second ledger close time (#249).
 /// See `docs/ttl.md` for the full rationale.
 pub const DEFAULT_TTL: u32 = 120_960;
+
+/// Write `value` to persistent storage under `key` and extend that entry's TTL
+/// to [`DEFAULT_TTL`] (#434).
+///
+/// Every persistent write that should live for the default window goes through
+/// this helper, so the `set` and its `extend_ttl` cannot drift apart at a call site.
+fn write_persistent<K, V>(env: &Env, key: &K, value: &V)
+where
+    K: IntoVal<Env, Val>,
+    V: IntoVal<Env, Val>,
+{
+    env.storage().persistent().set(key, value);
+    env.storage().persistent().extend_ttl(key, DEFAULT_TTL, DEFAULT_TTL);
+}
 
 /// Protocol-enforced upper bound on caller-specified TTL values.
 ///
@@ -95,8 +112,16 @@ pub enum DataKey {
     OwnerIndex(Address),
     /// Stores the list of alert IDs watching a given contract address.
     ContractIndex(Address),
-    /// Monotonic counter used to generate unique alert IDs.
+    /// Monotonic counter used to generate unique alert IDs (instance storage).
     NextId,
+    /// Admin set (instance storage). Legacy single-`Address` values are migrated on read.
+    Admin,
+    /// Per-owner active alert limit (instance storage).
+    Limit,
+    /// Circuit-breaker paused flag (instance storage).
+    Paused,
+    /// Address of the configured `WatcherRegistry` (instance storage).
+    WatcherRegistry,
 }
 
 #[contracterror]
@@ -153,6 +178,18 @@ pub enum ContractError {
 /// Stored under [`DataKey::Alert`] with a default TTL of [`DEFAULT_TTL`] ledgers
 /// (~7 days). Use [`AlertRegistry::bump_alert`] to extend up to [`MAX_TTL`].
 /// See `docs/ttl.md` for expiry details.
+/// Alert counts for one owner, returned by [`AlertRegistry::get_alert_summary`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AlertSummary {
+    /// Global monotonic count of alerts ever registered (see `get_alert_count`).
+    pub total: u64,
+    /// Live alerts owned by the queried owner whose `active` flag is `true`.
+    pub active: u32,
+    /// Live alerts owned by the queried owner whose `active` flag is `false`.
+    pub inactive: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AlertConfig {
@@ -244,7 +281,7 @@ impl AlertRegistry {
 
     /// Initialize the optional admin role for the registry. Can only be called once.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError> {
-        if env.storage().instance().has(&symbol_short!("ADMIN")) {
+        if env.storage().instance().has(&DataKey::Admin) {
             return Err(ContractError::AlreadyInitialized);
         }
         Self::set_admins(&env, &vec![&env, admin.clone()]);
@@ -384,7 +421,7 @@ impl AlertRegistry {
         if limit != 0 && limit < 1 {
             return Err(ContractError::LimitTooLow);
         }
-        env.storage().instance().set(&symbol_short!("LIMIT"), &limit);
+        env.storage().instance().set(&DataKey::Limit, &limit);
         // Record every limit change on-chain, so the audit trail shows it (#248).
         env.events().publish((symbol_short!("admin"), symbol_short!("limit")), (admin, limit));
         Ok(())
@@ -397,7 +434,7 @@ impl AlertRegistry {
     pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<(), ContractError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
-        env.storage().instance().set(&symbol_short!("PAUSED"), &paused);
+        env.storage().instance().set(&DataKey::Paused, &paused);
         let topic = if paused {
             symbol_short!("pause")
         } else {
@@ -411,7 +448,7 @@ impl AlertRegistry {
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&symbol_short!("PAUSED"))
+            .get(&DataKey::Paused)
             .unwrap_or(false)
     }
 
@@ -419,7 +456,7 @@ impl AlertRegistry {
     pub fn get_per_owner_alert_limit(env: Env) -> u32 {
         env.storage()
             .instance()
-            .get(&symbol_short!("LIMIT"))
+            .get(&DataKey::Limit)
             .unwrap_or(0u32)
     }
 
@@ -441,7 +478,7 @@ impl AlertRegistry {
         Self::assert_admin(&env, &admin)?;
         env.storage()
             .instance()
-            .set(&symbol_short!("WATCHREG"), &watcher_registry);
+            .set(&DataKey::WatcherRegistry, &watcher_registry);
         Ok(())
     }
 
@@ -450,7 +487,7 @@ impl AlertRegistry {
     pub fn get_watcher_registry(env: Env) -> Option<Address> {
         env.storage()
             .instance()
-            .get(&symbol_short!("WATCHREG"))
+            .get(&DataKey::WatcherRegistry)
     }
 
     // ── Alert mutations ───────────────────────────────────────────────────
@@ -505,14 +542,8 @@ impl AlertRegistry {
             tags,
         };
 
-        env.storage().persistent().set(&DataKey::Alert(id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(id), DEFAULT_TTL, DEFAULT_TTL);
-        env.storage().persistent().set(&DataKey::AlertActive(id), &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::AlertActive(id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(id), &config);
+        write_persistent(&env, &DataKey::AlertActive(id), &true);
         Self::push_owner_index(&env, &owner, id)?;
         Self::push_contract_index(&env, &target_contract, id)?;
 
@@ -522,6 +553,39 @@ impl AlertRegistry {
         );
 
         Ok(id)
+    }
+
+    /// Dry-run the validation performed by [`AlertRegistry::register_alert`] (#417).
+    ///
+    /// Clients can call this before submitting a transaction to check label
+    /// length, webhook hash format, rule descriptors, tags and the per-owner
+    /// limit. It returns the first validation error encountered.
+    ///
+    /// Unlike `register_alert`, this does not require auth and never writes to
+    /// storage. In particular it does not prune the owner index the way the
+    /// real registration path does.
+    ///
+    /// `target_contract` is accepted so the signature mirrors `register_alert`;
+    /// it is not validated here.
+    pub fn validate_alert_input(
+        env: Env,
+        owner: Address,
+        target_contract: Address,
+        label: String,
+        webhook_hash: String,
+        rules: Vec<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<(), ContractError> {
+        let _ = target_contract;
+        Self::assert_not_paused(&env)?;
+        if webhook_hash.len() != 64 {
+            return Err(ContractError::InvalidWebhookHash);
+        }
+        Self::validate_label(&label)?;
+        Self::validate_rules(&env, &rules)?;
+        Self::validate_tags(&tags)?;
+        Self::assert_per_owner_limit_readonly(&env, &owner, 1)?;
+        Ok(())
     }
 
     /// Register many alerts for `caller` in one transaction.
@@ -580,14 +644,8 @@ impl AlertRegistry {
                 pending_webhook_hash: None,
                 tags: None,
             };
-            env.storage().persistent().set(&DataKey::Alert(id), &config);
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::Alert(id), DEFAULT_TTL, DEFAULT_TTL);
-            env.storage().persistent().set(&DataKey::AlertActive(id), &true);
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::AlertActive(id), DEFAULT_TTL, DEFAULT_TTL);
+            write_persistent(&env, &DataKey::Alert(id), &config);
+            write_persistent(&env, &DataKey::AlertActive(id), &true);
             Self::push_owner_index(&env, &caller, id)?;
             Self::push_contract_index(&env, &input.target_contract, id)?;
             env.events().publish(
@@ -636,14 +694,8 @@ impl AlertRegistry {
             .ok_or(ContractError::AlertNotFound)?;
         config.active = active;
         config.updated_at = env.ledger().timestamp();
-        env.storage().persistent().set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
-        env.storage().persistent().set(&DataKey::AlertActive(config_id), &active);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::AlertActive(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
+        write_persistent(&env, &DataKey::AlertActive(config_id), &active);
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("update")),
             (config_id, admin.clone(), active),
@@ -679,19 +731,9 @@ impl AlertRegistry {
         config.active = active;
         config.updated_at = env.ledger().timestamp();
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
         // Keep the cheap AlertActive flag in sync with the full config.
-        env.storage()
-            .persistent()
-            .set(&DataKey::AlertActive(config_id), &active);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::AlertActive(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::AlertActive(config_id), &active);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
@@ -807,12 +849,7 @@ impl AlertRegistry {
         config.webhook_hash = webhook_hash;
         config.updated_at = env.ledger().timestamp();
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
@@ -847,15 +884,27 @@ impl AlertRegistry {
     /// Returns [`ContractError::AlertNotFound`] if `config_id` does not exist.
     /// Returns [`ContractError::Unauthorized`] if `caller` is not the alert owner.
     ///
+    /// `note` is an optional free-form reason for the rotation (max 128 bytes,
+    /// same rule as the alert label). It is **not** stored on-chain; it is only
+    /// carried in the emitted event so operators have an audit trail.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::LabelTooLong`] if `note` exceeds 128 bytes.
+    ///
     /// # Events
-    /// Emits `(Symbol("alert"), Symbol("wh_prop"))` with data `(id: u64, caller: Address)`.
+    /// Emits `(Symbol("alert"), Symbol("wh_prop"))` with data
+    /// `(id: u64, caller: Address, note: Option<String>)`.
     pub fn propose_webhook(
         env: Env,
         caller: Address,
         config_id: u64,
         new_webhook_hash: String,
+        note: Option<String>,
     ) -> Result<(), ContractError> {
         caller.require_auth();
+        if let Some(n) = &note {
+            Self::validate_label(n)?;
+        }
 
         let mut config: AlertConfig = env
             .storage()
@@ -868,16 +917,11 @@ impl AlertRegistry {
         config.pending_webhook_hash = Some(new_webhook_hash);
         config.updated_at = env.ledger().timestamp();
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
 
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("wh_prop")),
-            (config_id, caller),
+            (config_id, caller, note),
         );
 
         Ok(())
@@ -924,12 +968,7 @@ impl AlertRegistry {
         config.webhook_hash = pending;
         config.updated_at = env.ledger().timestamp();
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
 
         // #204: emit the canonical alert.webhook event (not the non-standard wh_conf).
         env.events().publish(
@@ -978,10 +1017,7 @@ impl AlertRegistry {
         config.label = label;
         config.updated_at = env.ledger().timestamp();
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Alert(config_id), &config);
-        env.storage().persistent().extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
         env.storage().persistent().extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
         env.storage().persistent().extend_ttl(&DataKey::ContractIndex(config.target_contract.clone()), DEFAULT_TTL, DEFAULT_TTL);
         env.events().publish(
@@ -1280,6 +1316,35 @@ impl AlertRegistry {
         out
     }
 
+    /// Return the active alerts whose rule list contains `rule` (#416).
+    ///
+    /// v1 uses a linear scan over every allocated alert ID. Results are capped
+    /// at [`MAX_BATCH_SIZE`]; once the cap is reached the scan stops early.
+    /// Inactive and removed alerts are skipped. Read-only, no auth.
+    #[must_use]
+    pub fn get_alerts_by_rule(env: Env, rule: String) -> Vec<AlertConfig> {
+        let next: u64 = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("NEXT_ID"))
+            .unwrap_or(0u64);
+        let mut out: Vec<AlertConfig> = Vec::new(&env);
+        let mut id: u64 = 0;
+        while id < next && out.len() < MAX_BATCH_SIZE {
+            if let Some(cfg) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
+            {
+                if cfg.active && cfg.rules.contains(&rule) {
+                    out.push_back(cfg);
+                }
+            }
+            id += 1;
+        }
+        out
+    }
+
     /// Retrieve all alert configs owned by a given address.
     ///
     /// If a `WatcherRegistry` is configured, `querier` must be a registered
@@ -1375,13 +1440,47 @@ impl AlertRegistry {
                 if cfg.active {
                     cfg.active = false;
                     cfg.updated_at = env.ledger().timestamp();
+                    write_persistent(&env, &DataKey::Alert(id), &cfg);
+                    write_persistent(&env, &DataKey::AlertActive(id), &false);
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// Re-activate every inactive alert owned by `caller` in one call (#418).
+    ///
+    /// Mirror of [`AlertRegistry::deactivate_all_alerts`]. Already-active alerts
+    /// are skipped. Each alert that changes has its `AlertActive` flag synced.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`.
+    ///
+    /// # Returns
+    /// The number of alerts that were activated.
+    pub fn activate_all_alerts(env: Env, caller: Address) -> u32 {
+        Self::assert_not_paused(&env).unwrap_or_else(|e| panic_with_error!(&env, e));
+        caller.require_auth();
+        let ids = Self::owner_index(&env, &caller);
+        let mut count: u32 = 0;
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            if let Some(mut cfg) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
+            {
+                if !cfg.active {
+                    cfg.active = true;
+                    cfg.updated_at = env.ledger().timestamp();
                     env.storage().persistent().set(&DataKey::Alert(id), &cfg);
                     env.storage()
                         .persistent()
                         .extend_ttl(&DataKey::Alert(id), DEFAULT_TTL, DEFAULT_TTL);
                     env.storage()
                         .persistent()
-                        .set(&DataKey::AlertActive(id), &false);
+                        .set(&DataKey::AlertActive(id), &true);
                     env.storage()
                         .persistent()
                         .extend_ttl(&DataKey::AlertActive(id), DEFAULT_TTL, DEFAULT_TTL);
@@ -1425,12 +1524,7 @@ impl AlertRegistry {
         config.target_contract = new_target.clone();
         config.updated_at = env.ledger().timestamp();
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
 
         // Migrate the contract index
         Self::remove_from_contract_index(&env, &old_target, config_id);
@@ -1466,7 +1560,7 @@ impl AlertRegistry {
         let total: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
 
         let mut out: Vec<AlertConfig> = vec![&env];
@@ -1505,10 +1599,7 @@ impl AlertRegistry {
         Self::validate_tags(&tags)?;
         config.tags = tags;
         config.updated_at = env.ledger().timestamp();
-        env.storage().persistent().set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("tags")),
             (config_id, caller),
@@ -1547,10 +1638,7 @@ impl AlertRegistry {
 
         config.owner = new_owner.clone();
         config.updated_at = env.ledger().timestamp();
-        env.storage().persistent().set(&DataKey::Alert(config_id), &config);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::Alert(config_id), &config);
         env.events().publish(
             (symbol_short!("alert"), symbol_short!("transfer")),
             (config_id, owner, new_owner),
@@ -1606,7 +1694,7 @@ impl AlertRegistry {
     pub fn get_alert_count(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64)
     }
 
@@ -1624,6 +1712,37 @@ impl AlertRegistry {
             }
         }
         count
+    }
+
+    /// Return the alert counts for `owner` in a single call (#419).
+    ///
+    /// * `total` is the global monotonic counter, identical to [`get_alert_count`].
+    /// * `active` and `inactive` count the owner's live alerts (entries that have
+    ///   not been removed or expired), split by their `active` flag.
+    pub fn get_alert_summary(env: Env, owner: Address) -> AlertSummary {
+        let total = Self::get_alert_count(env.clone());
+        let ids = Self::owner_index(&env, &owner);
+        let mut active: u32 = 0;
+        let mut inactive: u32 = 0;
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            if let Some(config) = env
+                .storage()
+                .persistent()
+                .get::<_, AlertConfig>(&DataKey::Alert(id))
+            {
+                if config.active {
+                    active += 1;
+                } else {
+                    inactive += 1;
+                }
+            }
+        }
+        AlertSummary {
+            total,
+            active,
+            inactive,
+        }
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
@@ -1644,7 +1763,7 @@ impl AlertRegistry {
         let maybe_registry: Option<Address> = env
             .storage()
             .instance()
-            .get(&symbol_short!("WATCHREG"));
+            .get(&DataKey::WatcherRegistry);
 
         if let Some(registry_addr) = maybe_registry {
             let client = ExtWatcherClient::new(env, &registry_addr);
@@ -1676,7 +1795,7 @@ impl AlertRegistry {
 
     /// Load the admin set, transparently migrating the legacy single-`Address` format.
     fn load_admins(env: &Env) -> Option<Vec<Address>> {
-        let raw: Val = env.storage().instance().get(&symbol_short!("ADMIN"))?;
+        let raw: Val = env.storage().instance().get(&DataKey::Admin)?;
         if let Ok(v) = Vec::<Address>::try_from_val(env, &raw) {
             return Some(v);
         }
@@ -1684,7 +1803,7 @@ impl AlertRegistry {
     }
 
     fn set_admins(env: &Env, admins: &Vec<Address>) {
-        env.storage().instance().set(&symbol_short!("ADMIN"), admins);
+        env.storage().instance().set(&DataKey::Admin, admins);
     }
 
     fn assert_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
@@ -1721,6 +1840,32 @@ impl AlertRegistry {
         Self::assert_per_owner_limit_for(env, owner, 1)
     }
 
+    /// Read-only variant of [`assert_per_owner_limit_for`] (#417).
+    ///
+    /// Counts the owner's live alerts without pruning the owner index, so it is
+    /// safe to call from dry-run validation.
+    fn assert_per_owner_limit_readonly(
+        env: &Env,
+        owner: &Address,
+        additional: u32,
+    ) -> Result<(), ContractError> {
+        let limit = Self::get_per_owner_alert_limit(env.clone());
+        if limit > 0 {
+            let ids = Self::owner_index(env, owner);
+            let mut live: u32 = 0;
+            for i in 0..ids.len() {
+                let id = ids.get(i).unwrap();
+                if env.storage().persistent().has(&DataKey::Alert(id)) {
+                    live = live.saturating_add(1);
+                }
+            }
+            if live.saturating_add(additional) > limit {
+                return Err(ContractError::OwnerAlertLimitExceeded);
+            }
+        }
+        Ok(())
+    }
+
     /// Like [`assert_per_owner_limit`], but checks that `additional` new alerts
     /// would still fit under the cap.
     fn assert_per_owner_limit_for(
@@ -1745,12 +1890,7 @@ impl AlertRegistry {
                         .persistent()
                         .remove(&DataKey::OwnerIndex(owner.clone()));
                 } else {
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::OwnerIndex(owner.clone()), &live_ids);
-                    env.storage()
-                        .persistent()
-                        .extend_ttl(&DataKey::OwnerIndex(owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
+                    write_persistent(&env, &DataKey::OwnerIndex(owner.clone()), &live_ids);
                 }
             }
             if live_ids.len().saturating_add(additional) > limit {
@@ -1858,12 +1998,12 @@ impl AlertRegistry {
         let id: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
         let next = id.checked_add(1).ok_or(ContractError::CounterOverflow)?;
         env.storage()
             .instance()
-            .set(&symbol_short!("NEXT_ID"), &next);
+            .set(&DataKey::NextId, &next);
         // Extend instance TTL so the counter stays alive even when only
         // bump_alert calls come in and no new registrations are happening (#212).
         env.storage()
@@ -1897,12 +2037,7 @@ impl AlertRegistry {
             }
         }
         ids.push_back(id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::OwnerIndex(owner.clone()), &ids);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::OwnerIndex(owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::OwnerIndex(owner.clone()), &ids);
         Ok(())
     }
 
@@ -1915,12 +2050,7 @@ impl AlertRegistry {
             }
         }
         ids.push_back(id);
-        env.storage()
-            .persistent()
-            .set(&DataKey::ContractIndex(target.clone()), &ids);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::ContractIndex(target.clone()), DEFAULT_TTL, DEFAULT_TTL);
+        write_persistent(&env, &DataKey::ContractIndex(target.clone()), &ids);
         Ok(())
     }
 
@@ -1940,12 +2070,7 @@ impl AlertRegistry {
                 .persistent()
                 .remove(&DataKey::OwnerIndex(owner.clone()));
         } else {
-            env.storage()
-                .persistent()
-                .set(&DataKey::OwnerIndex(owner.clone()), &updated);
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::OwnerIndex(owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
+            write_persistent(&env, &DataKey::OwnerIndex(owner.clone()), &updated);
         }
     }
 
@@ -1965,12 +2090,7 @@ impl AlertRegistry {
                 .persistent()
                 .remove(&DataKey::ContractIndex(target.clone()));
         } else {
-            env.storage()
-                .persistent()
-                .set(&DataKey::ContractIndex(target.clone()), &updated);
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::ContractIndex(target.clone()), DEFAULT_TTL, DEFAULT_TTL);
+            write_persistent(&env, &DataKey::ContractIndex(target.clone()), &updated);
         }
     }
 
@@ -2040,7 +2160,7 @@ mod tests {
     #[allow(unused_imports)]
     use soroban_sdk::{testutils::Events as _, FromVal as _, Symbol};
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, vec, Env, String};
+    use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, vec, Env, String};
 
     fn setup() -> (Env, AlertRegistryClient<'static>) {
         let env = Env::default();
@@ -3006,7 +3126,7 @@ mod tests {
 
     // 19. old admin cannot act after transfer_admin
     #[test]
-    fn test_old_admin_rejected_after_transfer_contract() {
+    fn test_old_admin_rejected_after_remove_alert() {
         let (env, client) = setup();
         let admin = Address::generate(&env);
         client.initialize(&admin);
@@ -3851,8 +3971,8 @@ mod tests {
         let events = env.events().all();
         let bump_event = events.iter().find(|(_, topics, _)| {
             topics.len() == 2
-                && Symbol::from_val(&env, &topics.get(0).unwrap()) == soroban_sdk::symbol_short!("alert")
-                && Symbol::from_val(&env, &topics.get(1).unwrap()) == soroban_sdk::symbol_short!("bump")
+                && topics.get(0).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(soroban_sdk::symbol_short!("alert")), &env))
+                && topics.get(1).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(soroban_sdk::symbol_short!("bump")), &env))
         });
         assert!(bump_event.is_some(), "expected an alert.bump event");
 
@@ -3887,8 +4007,8 @@ mod tests {
         let events = env.events().all();
         let bump_event = events.iter().find(|(_, topics, _)| {
             topics.len() == 2
-                && Symbol::from_val(&env, &topics.get(0).unwrap()) == soroban_sdk::symbol_short!("alert")
-                && Symbol::from_val(&env, &topics.get(1).unwrap()) == soroban_sdk::symbol_short!("bump")
+                && topics.get(0).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(soroban_sdk::symbol_short!("alert")), &env))
+                && topics.get(1).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(soroban_sdk::symbol_short!("bump")), &env))
         });
         assert!(bump_event.is_some());
 
@@ -3923,8 +4043,8 @@ mod tests {
             .iter()
             .find(|(_, topics, _)| {
                 topics.len() == 2
-                    && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("alert")
-                    && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("bump")
+                    && topics.get(0).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(symbol_short!("alert")), &env))
+                    && topics.get(1).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(symbol_short!("bump")), &env))
             })
             .expect("alert.bump event must be emitted");
 
@@ -3985,7 +4105,7 @@ mod tests {
         let owner = Address::generate(&env);
         let target = Address::generate(&env);
 
-        env.storage().instance().set(&symbol_short!("NEXT_ID"), &u64::MAX);
+        env.storage().instance().set(&DataKey::NextId, &u64::MAX);
 
         let res = client.try_register_alert(
             &owner,
@@ -4120,7 +4240,7 @@ mod tests {
         let count_before: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
         assert_eq!(count_before, 1u64);
 
@@ -4133,7 +4253,7 @@ mod tests {
         let count_after: u64 = env
             .storage()
             .instance()
-            .get(&symbol_short!("NEXT_ID"))
+            .get(&DataKey::NextId)
             .unwrap_or(0u64);
         assert_eq!(count_after, count_before, "NEXT_ID must not change after bump_alert calls");
 
@@ -4171,8 +4291,8 @@ mod tests {
         let events = env.events().all();
         let remove_event = events.iter().skip(events_before as usize).find(|(_, topics, _)| {
             topics.len() == 2
-                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("alert")
-                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("remove")
+                && topics.get(0).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(symbol_short!("alert")), &env))
+                && topics.get(1).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(symbol_short!("remove")), &env))
         }).expect("alert.remove event must be emitted");
 
         // Owner-initiated: data is (id: u64, caller: Address)
@@ -4207,8 +4327,8 @@ mod tests {
         let events = env.events().all();
         let remove_event = events.iter().skip(events_before as usize).find(|(_, topics, _)| {
             topics.len() == 2
-                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("alert")
-                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("remove")
+                && topics.get(0).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(symbol_short!("alert")), &env))
+                && topics.get(1).unwrap().shallow_eq(&soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(&(symbol_short!("remove")), &env))
         }).expect("alert.remove event must be emitted for admin removal");
 
         // Admin-initiated: data is (id: u64, admin: Address, owner: Address)
@@ -4250,7 +4370,7 @@ mod tests {
         let a = Address::generate(&env);
         let b = Address::generate(&env);
         env.as_contract(&c.address, || {
-            env.storage().instance().set(&symbol_short!("ADMIN"), &a);
+            env.storage().instance().set(&DataKey::Admin, &a);
         });
         assert_eq!(c.get_admin(), a);
         c.add_admin(&a, &b);
