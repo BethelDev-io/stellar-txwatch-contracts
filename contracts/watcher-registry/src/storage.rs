@@ -5,10 +5,12 @@
 
 use soroban_sdk::{Address, Env, Map, Vec};
 
-use crate::types::{ContractError, DataKey, WatcherInfo};
-
-/// Number of ledgers to extend storage TTL by on each access.
-/// At ~5s per ledger this is roughly 30 days.
+/// Default TTL (in ledgers) used when extending instance storage.
+/// ~30 days at 5s/ledger.
+///
+/// Deliberately longer than the `alert-registry` default (`120_960`, ~7 days):
+/// the watcher set changes infrequently, while alert data is written often.
+/// See `docs/ttl.md`.
 pub const DEFAULT_TTL: u32 = 518_400;
 
 /// Extend the instance storage TTL so a dormant registry is not archived.
