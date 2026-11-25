@@ -92,7 +92,7 @@ impl WatcherRegistry {
 
         let admins: Vec<Address> = vec![&env, admin.clone()];
         env.storage().instance().set(&DataKey::Admins, &admins);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("init")),
@@ -118,7 +118,7 @@ impl WatcherRegistry {
         guards::assert_admin(&env, &caller)?;
         guards::assert_not_paused(&env)?;
 
-        let mut admins = Self::load_admins(&env);
+        let mut admins = storage::load_admins(&env);
         for i in 0..admins.len() {
             if admins.get(i).unwrap() == new_admin {
                 return Ok(()); // already an admin, idempotent
@@ -126,7 +126,7 @@ impl WatcherRegistry {
         }
         admins.push_back(new_admin.clone());
         env.storage().instance().set(&DataKey::Admins, &admins);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("add")),
@@ -159,7 +159,7 @@ impl WatcherRegistry {
         guards::assert_admin(&env, &caller)?;
         guards::assert_not_paused(&env)?;
 
-        let admins = Self::load_admins(&env);
+        let admins = storage::load_admins(&env);
         if admins.len() <= 1 {
             return Err(ContractError::LastAdmin);
         }
@@ -172,7 +172,7 @@ impl WatcherRegistry {
             }
         }
         env.storage().instance().set(&DataKey::Admins, &updated);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("admin"), symbol_short!("remove")),
@@ -181,7 +181,7 @@ impl WatcherRegistry {
 
         if caller == target_admin {
             env.events().publish(
-                (symbol_short!("admin"), Symbol::new(&env, "self_remove")),
+                (symbol_short!("admin"), soroban_sdk::Symbol::new(&env, "self_remove")),
                 caller,
             );
         }
@@ -209,13 +209,13 @@ impl WatcherRegistry {
         guards::assert_admin(&env, &admin)?;
         guards::assert_not_paused(&env)?;
 
-        if Self::load_admins(&env).len() > 1 {
+        if storage::load_admins(&env).len() > 1 {
             return Err(ContractError::MultipleAdminsExist);
         }
 
         let new_admins: Vec<Address> = vec![&env, new_admin.clone()];
         env.storage().instance().set(&DataKey::Admins, &new_admins);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         // Emit an auditable on-chain event recording the full admin transfer.
         env.events().publish(
@@ -275,7 +275,7 @@ impl WatcherRegistry {
         }
         watchers.push_back(watcher.clone());
         env.storage().instance().set(&DataKey::Watchers, &watchers);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         Self::increment_watcher_count(&env);
         Self::maybe_emit_capacity(&env);
@@ -311,7 +311,7 @@ impl WatcherRegistry {
         guards::assert_admin(&env, &admin)?;
         guards::assert_not_paused(&env)?;
 
-        let watchers = Self::load_watchers(&env);
+        let watchers = storage::load_watchers(&env);
         let mut updated: Vec<Address> = vec![&env];
         let mut removed = false;
         for i in 0..watchers.len() {
@@ -326,7 +326,7 @@ impl WatcherRegistry {
             return Err(ContractError::WatcherNotFound);
         }
         env.storage().instance().set(&DataKey::Watchers, &updated);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         Self::decrement_watcher_count(&env);
         env.events().publish(
@@ -427,7 +427,7 @@ impl WatcherRegistry {
         guards::assert_admin(&env, &admin)?;
         guards::assert_not_paused(&env)?;
 
-        let watchers = Self::load_watchers(&env);
+        let watchers = storage::load_watchers(&env);
         let mut found = false;
         let mut updated: Vec<Address> = vec![&env];
         for i in 0..watchers.len() {
@@ -455,11 +455,11 @@ impl WatcherRegistry {
             updated.push_back(new_watcher.clone());
         } else {
             // old was removed but new was already there — net count decreases by 1
-            Self::decrement_watcher_count(&env);
+            storage::decrement_watcher_count(&env);
         }
 
         env.storage().instance().set(&DataKey::Watchers, &updated);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("watcher"), symbol_short!("remove")),
@@ -496,7 +496,7 @@ impl WatcherRegistry {
             return Err(ContractError::BatchTooLarge);
         }
 
-        let mut stored = Self::load_watchers(&env);
+        let mut stored = storage::load_watchers(&env);
         let mut added: Vec<Address> = vec![&env];
         for i in 0..watchers.len() {
             let w = watchers.get(i).unwrap();
@@ -510,10 +510,10 @@ impl WatcherRegistry {
         }
 
         env.storage().instance().set(&DataKey::Watchers, &stored);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
         for i in 0..added.len() {
             let w = added.get(i).unwrap();
-            Self::increment_watcher_count(&env);
+            storage::increment_watcher_count(&env);
             env.events()
                 .publish((symbol_short!("watcher"), symbol_short!("register")), w);
         }
@@ -540,11 +540,11 @@ impl WatcherRegistry {
         guards::assert_admin(&env, &admin)?;
         guards::assert_not_paused(&env)?;
 
-        if !Self::load_watchers(&env).contains(&watcher) {
+        if !storage::load_watchers(&env).contains(&watcher) {
             return Err(ContractError::WatcherNotFound);
         }
-        Self::set_expiry(&env, &watcher, new_expiry);
-        Self::extend_instance_ttl(&env);
+        storage::set_expiry(&env, &watcher, new_expiry);
+        storage::extend_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("watcher"), symbol_short!("renew")),
@@ -561,7 +561,7 @@ impl WatcherRegistry {
         admin.require_auth();
         guards::assert_admin(&env, &admin)?;
         env.storage().instance().set(&DataKey::Paused, &paused);
-        Self::extend_instance_ttl(&env);
+        storage::extend_instance_ttl(&env);
 
         let topic = if paused {
             symbol_short!("pause")
@@ -617,7 +617,7 @@ impl WatcherRegistry {
         guards::assert_admin(&env, &admin)?;
         guards::assert_not_paused(&env)?;
 
-        let watchers = Self::load_watchers(&env);
+        let watchers = storage::load_watchers(&env);
         for i in 0..watchers.len() {
             let w = watchers.get(i).unwrap();
             env.events().publish(
@@ -631,9 +631,7 @@ impl WatcherRegistry {
         Self::extend_instance_ttl(&env);
 
         // Reset the count to zero
-        env.storage()
-            .instance()
-            .set(&symbol_short!("W_CNT"), &0u32);
+        env.storage().instance().set(&DataKey::WatcherCount, &0u32);
 
         Ok(())
     }
@@ -644,7 +642,7 @@ impl WatcherRegistry {
     /// callers can migrate; new code should call `get_all_watchers`.
     #[must_use]
     pub fn get_watchers(env: Env) -> Vec<Address> {
-        Self::load_watchers(&env)
+        storage::load_watchers(&env)
     }
 
     /// Get all current admin addresses.
@@ -654,7 +652,7 @@ impl WatcherRegistry {
         if !env.storage().instance().has(&DataKey::Admins) {
             return Err(ContractError::NotInitialized);
         }
-        Ok(Self::load_admins(&env))
+        Ok(storage::load_admins(&env))
     }
 
     /// Get the primary admin address (first in the admin set).
@@ -678,7 +676,7 @@ impl WatcherRegistry {
         if !env.storage().instance().has(&DataKey::Admins) {
             return false;
         }
-        let admins = Self::load_admins(&env);
+        let admins = storage::load_admins(&env);
         for i in 0..admins.len() {
             if admins.get(i).unwrap() == address {
                 return true;
@@ -697,10 +695,7 @@ impl WatcherRegistry {
     /// the cost of fetching and deserializing the full watcher list.
     #[must_use]
     pub fn get_watcher_count(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&symbol_short!("W_CNT"))
-            .unwrap_or(0u32)
+        storage::load_watcher_count(&env)
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────────
@@ -1207,7 +1202,7 @@ mod tests {
         let (_, topics, _) = env.events().all().last().unwrap();
         assert_eq!(
             topics,
-            (symbol_short!("admin"), Symbol::new(&env, "self_remove")).into_val(&env)
+            (symbol_short!("admin"), soroban_sdk::Symbol::new(&env, "self_remove")).into_val(&env)
         );
 
         assert!(!client.is_admin(&admin));
