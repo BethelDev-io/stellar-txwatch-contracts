@@ -30,6 +30,15 @@ mod upgrade_roundtrip_tests;
 mod count_consistency_tests;
 
 #[cfg(test)]
+mod contract_alert_count_tests;
+
+#[cfg(test)]
+mod set_alert_active_tests;
+
+#[cfg(test)]
+mod owner_ids_paginated_tests;
+
+#[cfg(test)]
 mod owner_isolation_tests;
 
 #[cfg(all(test, feature = "testutils"))]
@@ -182,7 +191,7 @@ pub struct AlertSummary {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AlertConfig {
     /// Human-readable label for the alert.
     pub label: String,
@@ -740,6 +749,71 @@ impl AlertRegistry {
         Ok(())
     }
 
+    /// Set only the `active` flag of an existing alert.
+    ///
+    /// Unlike [`AlertRegistry::update_alert`], the caller does not need to pass
+    /// the current rules back, so toggling an alert costs no extra read. The
+    /// rules, label, webhook hash and tags are left unchanged.
+    ///
+    /// Keeps the `AlertActive` flag in sync and emits
+    /// `(Symbol("alert"), Symbol("update"))` with data `(config_id, caller, active)`,
+    /// the same event `update_alert` emits.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`, who must be the
+    /// original owner of the alert.
+    ///
+    /// # Errors
+    /// [`ContractError::ContractPaused`] while paused,
+    /// [`ContractError::AlertNotFound`] if the alert does not exist, and
+    /// [`ContractError::Unauthorized`] if `caller` is not the owner.
+    pub fn set_alert_active(
+        env: Env,
+        caller: Address,
+        config_id: u64,
+        active: bool,
+    ) -> Result<(), ContractError> {
+        Self::assert_not_paused(&env)?;
+        caller.require_auth();
+
+        let mut config: AlertConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Alert(config_id))
+            .ok_or(ContractError::AlertNotFound)?;
+
+        Self::assert_owner(&config, &caller)?;
+
+        config.active = active;
+        config.updated_at = env.ledger().timestamp();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Alert(config_id), &config);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Alert(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AlertActive(config_id), &active);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::AlertActive(config_id), DEFAULT_TTL, DEFAULT_TTL);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), DEFAULT_TTL, DEFAULT_TTL);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::ContractIndex(config.target_contract.clone()), DEFAULT_TTL, DEFAULT_TTL);
+
+        env.events().publish(
+            (symbol_short!("alert"), symbol_short!("update")),
+            (config_id, caller, active),
+        );
+
+        Ok(())
+    }
+
     /// Update the webhook hash for an existing alert.
     ///
     /// Emits `(Symbol("alert"), Symbol("webhook"))` with data `(id, caller)`.
@@ -1164,12 +1238,50 @@ impl AlertRegistry {
         Self::live_ids(&env, &ids)
     }
 
+    /// Return the number of live alerts that watch `target_contract`.
+    ///
+    /// Counts exactly the IDs that [`get_alert_ids_for_contract`] would return,
+    /// so IDs whose storage entry has expired or been removed are not counted.
+    /// Returned as `u32`, which maps to `number` in the TypeScript bindings.
+    #[must_use]
+    pub fn get_alert_count_for_contract(env: Env, target_contract: Address) -> u32 {
+        let ids = Self::contract_index(&env, &target_contract);
+        Self::live_ids(&env, &ids).len()
+    }
+
     /// Return the IDs of live alerts owned by `owner` without deserializing
     /// the configs. IDs whose storage entry is gone are skipped.
     #[must_use]
     pub fn get_alert_ids_by_owner(env: Env, owner: Address) -> Vec<u64> {
         let ids = Self::owner_index(&env, &owner);
         Self::live_ids(&env, &ids)
+    }
+
+    /// Return one page of the live alert IDs owned by `owner`.
+    ///
+    /// `offset` and `limit` address the list of *live* IDs, so an ID whose
+    /// storage entry has gone never occupies a slot in a page. `limit` is
+    /// clamped to [`MAX_BATCH_SIZE`]. An `offset` at or past the end returns an
+    /// empty vec.
+    ///
+    /// The existence check runs over the owner's full index before slicing, so
+    /// this bounds the size of each response; it does not reduce the storage
+    /// reads per call.
+    #[must_use]
+    pub fn get_alert_ids_by_owner_paginated(
+        env: Env,
+        owner: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        let effective_limit = limit.min(MAX_BATCH_SIZE);
+        let live = Self::live_ids(&env, &Self::owner_index(&env, &owner));
+        let end = offset.saturating_add(effective_limit).min(live.len());
+        let mut page: Vec<u64> = Vec::new(&env);
+        for i in offset..end {
+            page.push_back(live.get(i).unwrap());
+        }
+        page
     }
 
     /// Retrieve only the active alert configs that watch a given contract address.
@@ -2045,6 +2157,8 @@ impl AlertRegistry {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use soroban_sdk::{testutils::Events as _, FromVal as _, Symbol};
     use super::*;
     use soroban_sdk::{testutils::{Address as _, Events as _, Ledger as _}, vec, Env, String};
 
