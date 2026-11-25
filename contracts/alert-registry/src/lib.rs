@@ -529,11 +529,11 @@ impl AlertRegistry {
         rules: Vec<String>,
         tags: Option<Vec<String>>,
     ) -> Result<u64, ContractError> {
+        owner.require_auth();
         Self::assert_not_paused(&env)?;
         if webhook_hash.len() != 64 {
             return Err(ContractError::InvalidWebhookHash);
         }
-        owner.require_auth();
 
         Self::validate_label(&label)?;
         Self::validate_rules(&env, &rules)?;
@@ -625,11 +625,11 @@ impl AlertRegistry {
         caller: Address,
         inputs: Vec<AlertInput>,
     ) -> Result<Vec<u64>, ContractError> {
+        caller.require_auth();
         Self::assert_not_paused(&env)?;
         if inputs.len() > MAX_BATCH_SIZE {
             return Err(ContractError::BatchTooLarge);
         }
-        caller.require_auth();
 
         for i in 0..inputs.len() {
             let input = inputs.get(i).unwrap();
@@ -729,8 +729,8 @@ impl AlertRegistry {
         rules: Vec<String>,
         active: bool,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         caller.require_auth();
+        Self::assert_not_paused(&env)?;
 
         let mut config: AlertConfig = env
             .storage()
@@ -845,8 +845,8 @@ impl AlertRegistry {
         config_id: u64,
         webhook_hash: String,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         caller.require_auth();
+        Self::assert_not_paused(&env)?;
 
         let mut config: AlertConfig = env
             .storage()
@@ -1023,8 +1023,8 @@ impl AlertRegistry {
         config_id: u64,
         label: String,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         caller.require_auth();
+        Self::assert_not_paused(&env)?;
 
         Self::validate_label(&label)?;
 
@@ -1061,8 +1061,8 @@ impl AlertRegistry {
         caller: Address,
         config_id: u64,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         caller.require_auth();
+        Self::assert_not_paused(&env)?;
 
         let config: AlertConfig = env
             .storage()
@@ -1089,8 +1089,8 @@ impl AlertRegistry {
         admin: Address,
         config_id: u64,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         admin.require_auth();
+        Self::assert_not_paused(&env)?;
         Self::assert_admin(&env, &admin)?;
 
         let config: AlertConfig = env
@@ -1557,8 +1557,8 @@ impl AlertRegistry {
     /// # Returns
     /// The number of alerts that were deactivated.
     pub fn deactivate_all_alerts(env: Env, caller: Address) -> u32 {
-        Self::assert_not_paused(&env).unwrap_or_else(|e| panic_with_error!(&env, e));
         caller.require_auth();
+        Self::assert_not_paused(&env).unwrap_or_else(|e| panic_with_error!(&env, e));
         let ids = Self::owner_index(&env, &caller);
         let mut count: u32 = 0;
         for i in 0..ids.len() {
@@ -1640,8 +1640,8 @@ impl AlertRegistry {
         config_id: u64,
         new_target: Address,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         caller.require_auth();
+        Self::assert_not_paused(&env)?;
 
         let mut config: AlertConfig = env
             .storage()
@@ -1719,8 +1719,8 @@ impl AlertRegistry {
         config_id: u64,
         tags: Option<Vec<String>>,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         caller.require_auth();
+        Self::assert_not_paused(&env)?;
         let mut config: AlertConfig = env
             .storage()
             .persistent()
@@ -1751,8 +1751,8 @@ impl AlertRegistry {
         config_id: u64,
         new_owner: Address,
     ) -> Result<(), ContractError> {
-        Self::assert_not_paused(&env)?;
         owner.require_auth();
+        Self::assert_not_paused(&env)?;
         let mut config: AlertConfig = env
             .storage()
             .persistent()
