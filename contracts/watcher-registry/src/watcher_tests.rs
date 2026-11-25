@@ -84,12 +84,12 @@ fn transfer_admin_replaces_the_admin_set() {
 fn register_watcher_is_idempotent_and_admin_only() {
     let (env, client, admin) = setup();
     let watcher = Address::generate(&env);
-    client.register_watcher(&admin, &watcher, &None);
-    client.register_watcher(&admin, &watcher, &None);
+    client.register_watcher(&admin, &watcher);
+    client.register_watcher(&admin, &watcher);
     assert_eq!(client.get_watcher_count(), 1);
 
     let stranger = Address::generate(&env);
-    assert_eq!(client.try_register_watcher(&stranger, &watcher, &None), Err(Ok(ContractError::Unauthorized)));
+    assert_eq!(client.try_register_watcher(&stranger, &watcher), Err(Ok(ContractError::Unauthorized)));
 }
 
 #[test]
@@ -102,8 +102,8 @@ fn remove_unknown_watcher_returns_not_found() {
 #[test]
 fn clear_all_watchers_empties_the_list() {
     let (env, client, admin) = setup();
-    client.register_watcher(&admin, &Address::generate(&env), &None);
-    client.register_watcher(&admin, &Address::generate(&env), &None);
+    client.register_watcher(&admin, &Address::generate(&env));
+    client.register_watcher(&admin, &Address::generate(&env));
     client.clear_all_watchers(&admin);
     assert_eq!(client.get_watcher_count(), 0);
 }
@@ -113,34 +113,104 @@ fn is_authorized_is_true_only_for_registered_watchers() {
     let (env, client, admin) = setup();
     let watcher = Address::generate(&env);
     let other = Address::generate(&env);
-    client.register_watcher(&admin, &watcher, &None);
+    client.register_watcher(&admin, &watcher);
     assert!(client.is_authorized(&watcher));
     assert!(!client.is_authorized(&other));
 }
 
+// ── #424: is_watcher_authorized_at(watcher, at) ─────────────────────────────
+
 #[test]
-fn watcher_expiry_is_compared_in_timestamp_units_not_sequence() {
-    // Regression for #451: `expires_at` is Unix seconds. Advancing the ledger
-    // *sequence* alone must not expire a watcher, and advancing the *timestamp*
-    // past `expires_at` must.
+fn is_watcher_authorized_at_true_when_no_expiry_is_set() {
     let (env, client, admin) = setup();
     let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    assert!(client.is_watcher_authorized_at(&watcher, &0));
+    assert!(client.is_watcher_authorized_at(&watcher, &u64::MAX));
+}
 
-    env.ledger().with_mut(|l| {
-        l.timestamp = 1_000;
-        l.sequence_number = 10;
-    });
-    client.register_watcher(&admin, &watcher, &Some(2_000));
+#[test]
+fn is_watcher_authorized_at_respects_the_expiry_boundary() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &Some(200));
+    // Inclusive boundary: at == expiry is still authorized.
+    assert!(client.is_watcher_authorized_at(&watcher, &200));
+    assert!(client.is_watcher_authorized_at(&watcher, &199));
+    assert!(!client.is_watcher_authorized_at(&watcher, &201));
+}
 
-    // Huge sequence jump, timestamp still before expiry: still authorized.
-    env.ledger().with_mut(|l| {
-        l.sequence_number = 1_000_000;
-    });
-    assert!(client.is_watcher_authorized(&watcher));
+#[test]
+fn is_watcher_authorized_at_false_for_unregistered_watcher() {
+    let (env, client, _admin) = setup();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_watcher_authorized_at(&stranger, &0));
+}
 
-    // Timestamp moves past expiry while sequence is unchanged: deauthorized.
-    env.ledger().with_mut(|l| {
-        l.timestamp = 2_001;
-    });
+#[test]
+fn is_watcher_authorized_at_is_independent_of_current_ledger_time() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    env.ledger().set_timestamp(100);
+    client.register_watcher(&admin, &watcher, &None, &Some(200));
+    // Current time is past expiry, but the historical query still answers for T=150.
+    env.ledger().set_timestamp(10_000);
     assert!(!client.is_watcher_authorized(&watcher));
+    assert!(client.is_watcher_authorized_at(&watcher, &150));
+    assert!(!client.is_watcher_authorized_at(&watcher, &500));
+}
+
+#[test]
+fn is_watcher_authorized_at_false_after_removal() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    client.remove_watcher(&admin, &watcher);
+    assert!(!client.is_watcher_authorized_at(&watcher, &0));
+}
+
+// ── #426: get_watcher_registered_at(watcher) ────────────────────────────────
+
+#[test]
+fn get_watcher_registered_at_returns_the_registration_timestamp() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    env.ledger().set_timestamp(1_234);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    assert_eq!(client.get_watcher_registered_at(&watcher), Some(1_234));
+    // Matches the value stored in WatcherInfo.
+    assert_eq!(
+        client.get_watcher_info(&watcher).unwrap().registered_at,
+        1_234
+    );
+}
+
+#[test]
+fn get_watcher_registered_at_none_for_unknown_watcher() {
+    let (env, client, _admin) = setup();
+    let stranger = Address::generate(&env);
+    assert_eq!(client.get_watcher_registered_at(&stranger), None);
+}
+
+#[test]
+fn get_watcher_registered_at_none_after_removal() {
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    client.remove_watcher(&admin, &watcher);
+    assert_eq!(client.get_watcher_registered_at(&watcher), None);
+}
+
+#[test]
+fn get_watcher_registered_at_unchanged_by_later_renewal() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    let watcher = Address::generate(&env);
+    env.ledger().set_timestamp(50);
+    client.register_watcher(&admin, &watcher, &None, &None);
+    env.ledger().set_timestamp(900);
+    client.renew_watcher(&admin, &watcher, &Some(2_000));
+    assert_eq!(client.get_watcher_registered_at(&watcher), Some(50));
 }
