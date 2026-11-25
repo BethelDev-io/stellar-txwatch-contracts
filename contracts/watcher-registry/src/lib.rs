@@ -563,6 +563,9 @@ impl WatcherRegistry {
     ///
     /// While paused, all mutating entrypoints except this one return
     /// [`ContractError::ContractPaused`]; reads and `is_authorized` keep working.
+    ///
+    /// Idempotent: setting the flag to its current value is a no-op and emits
+    /// no event, so `admin.pause` / `admin.unpause` always mark a real transition (#446).
     pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<(), ContractError> {
         admin.require_auth();
         guards::assert_admin(&env, &admin)?;
