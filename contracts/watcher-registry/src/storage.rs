@@ -29,9 +29,20 @@ pub fn load_admins(env: &Env) -> Vec<Address> {
 /// Load the authorized watcher list, or an empty vec.
 pub fn load_watchers(env: &Env) -> Vec<Address> {
     env.storage()
-        .instance()
-        .get(&DataKey::Watchers)
-        .unwrap_or_else(|| Vec::new(env))
+        .persistent()
+        .get(&DataKey::Watcher(watcher.clone()))
+}
+
+/// Returns true when the watcher exists and has not expired at the current
+/// ledger timestamp.
+pub fn is_watcher_authorized(env: &Env, watcher: &Address) -> bool {
+    match get_watcher(env, watcher) {
+        Some(record) => match record.expires_at {
+            Some(exp) => env.ledger().timestamp() <= exp,
+            None => true,
+        },
+        None => false,
+    }
 }
 
 /// Return `Ok(())` if `caller` is in the admin set.
