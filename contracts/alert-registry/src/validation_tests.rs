@@ -41,7 +41,7 @@ fn register_alert_empty_rules_returns_empty_rules_error() {
         &target,
         &str(&env, "Alert"),
         &hash64(&env),
-        &vec![&env], // empty rules
+        &vec![&env],
         &None,
     );
 

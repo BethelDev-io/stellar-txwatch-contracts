@@ -28,6 +28,8 @@ Initializes the registry with an admin address. Can only be called once.
 
 Adds an address to the authorized watcher set. Idempotent — registering an already-registered watcher is a no-op.
 
+The set is capped at `MAX_WATCHERS` (100). A registration that would exceed the cap returns `ContractError::WatcherLimitExceeded`.
+
 **Requires auth:** `admin`
 
 **Parameters**
@@ -80,23 +82,9 @@ Renamed from `is_authorized` for clarity in cross-contract call contexts — the
 
 ---
 
-### `is_watcher_authorized_at`
+### `get_watchers` (deprecated)
 
-```
-is_watcher_authorized_at(env, watcher: Address, at: u64) -> bool
-```
-
-Time-locked authorization check (#424). Answers "was `watcher` authorized at ledger timestamp `at`?" using the stored expiry rather than the current ledger time.
-
-- Returns `true` when the watcher is registered and either has no expiry or `at <= expiry` (the boundary is inclusive).
-- Returns `false` when the watcher is not registered.
-- Read-only: no auth required; works while the registry is paused.
-
-`is_watcher_authorized` is equivalent to `is_watcher_authorized_at(watcher, ledger.timestamp())`.
-
-### `get_watchers`
-
-Returns all currently authorized watcher addresses.
+Deprecated alias for `get_all_watchers`. It returns the same result and is kept for one release so existing callers can migrate. New code should call `get_all_watchers`.
 
 **Parameters:** none
 
